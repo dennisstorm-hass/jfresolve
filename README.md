@@ -13,7 +13,7 @@ A Jellyfin plugin that integrates external streaming sources (Stremio addons) fr
   <a href="https://discord.gg/hPz3qn72Ue" target="_blank">
     <img src="https://img.shields.io/badge/Chat%20on%20Discord-5865F2?style=for-the-badge&logo=discord&logoColor=white" alt="Discord">
   </a>
-  <a href="https://vicking20.github.io/jfresolve/repository.json" target="_blank">
+  <a href="https://raw.githubusercontent.com/vicking20/jfresolve/refs/heads/main/repository.json" target="_blank">
     <img src="https://img.shields.io/badge/Add%20to%20Jellyfin-13B5EA?style=for-the-badge&logo=jellyfin&logoColor=white" alt="Jellyfin Repo">
   </a>
 </p>
@@ -49,12 +49,12 @@ This repository contains two versions of the plugin to support different Jellyfi
 
 ### For Jellyfin 10.9.x Users
 
-1. Add the link to the plugin to your Jellyfin server's plugin repository: [https://github.com/yourusername/jfresolve/releases/latest/download/jfresolve-10.9-vX.X.X.zip](https://github.com/yourusername/jfresolve/releases/latest/download/jfresolve-10.9-vX.X.X.zip)
+1. Add the link to the plugin to your Jellyfin server's plugin repository: [https://raw.githubusercontent.com/vicking20/jfresolve/refs/heads/main/repository.json](https://raw.githubusercontent.com/vicking20/jfresolve/refs/heads/main/repository.json)
 2. Install and configure your plugin. Tested with Torrentio, TorrentioRD, Aiostreams, MediaFusion. Your plugin needs to have your real debrid key setup.
 
 ### For Jellyfin 11.0+ Users
 
-1. Add the link to the plugin to your Jellyfin server's plugin repository: [https://github.com/vicking20/jfresolve/releases/latest/download/jfresolve-10.9-vX.X.X.zip](https://github.com/vicking20/jfresolve/releases/latest/download/jfresolve-10.9-vX.X.X.zip)
+1. Add the link to the plugin to your Jellyfin server's plugin repository: [https://raw.githubusercontent.com/vicking20/jfresolve/refs/heads/main/repository.json](https://raw.githubusercontent.com/vicking20/jfresolve/refs/heads/main/repository.json)
 2. Install and configure your plugin. Tested with Torrentio, TorrentioRD, Aiostreams, MediaFusion. Your plugin needs to have your real debrid key setup.
 
 ## Configuration
