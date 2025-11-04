@@ -22,9 +22,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <None Update="manifest.json">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
+    <None Update="jfresolve.png">
+        <CopyToOutputDirectory>Always</CopyToOutputDirectory>
+    </None>
     <None Remove="Configuration\configPage.html" />
     <EmbeddedResource Include="Configuration\configPage.html" />
-    <EmbeddedResource Include="../../jfresolve-10.9/jfresolve.png" />
+    <EmbeddedResource Include="jfresolve.png" />
   </ItemGroup>
 
 </Project>
