@@ -6,5 +6,6 @@
   "overview": "Automatically resolves and streams external content through Jellyfin.",
   "description": "Jfresolve helps Jellyfin users play media from external sources with minimal setup.",
   "category": "General",
-  "owner": "vicking20"
+  "owner": "vicking20",
+  "imageUrl": "https://raw.githubusercontent.com/vicking20/jfresolve/jfresolve.png"
 }
