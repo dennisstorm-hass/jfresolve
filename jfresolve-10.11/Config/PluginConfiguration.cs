@@ -32,6 +32,7 @@ namespace Jfresolve.Configuration
             FFmpegProbeSize = "40M";
             FFmpegAnalyzeDuration = "5M";
             ItemsPerRequest = 100;
+            LibraryPopulationHour = 3;
         }
 
         /// <summary>
@@ -133,5 +134,11 @@ namespace Jfresolve.Configuration
         /// Max number of items to fetch per request/batch when populating.
         /// </summary>
         public int ItemsPerRequest { get; set; }
+
+        /// <summary>
+        /// Gets or sets the hour (0-23 UTC) when daily library population should run.
+        /// Default: 3 (3 AM UTC).
+        /// </summary>
+        public int LibraryPopulationHour { get; set; }
     }
 }

@@ -24,6 +24,7 @@ namespace Jellyfin.Plugin.Jfresolve.Configuration
             IncludeAdult = false;
             IncludeUnreleased = false;
             IncludeSpecials = false;
+            LibraryPopulationHour = 3;
         }
 
         /// <summary>
@@ -81,5 +82,16 @@ namespace Jellyfin.Plugin.Jfresolve.Configuration
         /// Gets or Sets last population date and time.
         /// </summary>
         public DateTime? LastPopulationUtc { get; set; }
+
+        /// <summary>
+        /// Gets or sets a value indicating whether library population is enabled.
+        /// </summary>
+        public bool EnableLibraryPopulation { get; set; } = true;
+
+        /// <summary>
+        /// Gets or sets the hour (0-23 UTC) when daily library population should run.
+        /// Default: 3 (3 AM UTC).
+        /// </summary>
+        public int LibraryPopulationHour { get; set; }
     }
 }

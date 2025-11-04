@@ -1,166 +1,384 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
-<head>
-    <meta charset="utf-8">
-    <title>JF Resolve</title>
-</head>
-<body>
-    <div id="JfresolveConfigPage" data-role="page" class="page type-interior pluginConfigurationPage" data-require="emby-input,emby-button">
-        <div data-role="content">
-            <div class="content-primary">
-                <form id="JfresolveConfigForm">
-                    <!-- TMDb API Key -->
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="TmdbApiKey">TMDb API Key</label>
-                        <input id="TmdbApiKey" name="TmdbApiKey" type="text" is="emby-input" />
-                        <div class="fieldDescription">Enter your TMDb API key to fetch items for your library.</div>
-                    </div>
-
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="SearchNumber">Search Results</label>
-                        <input id="SearchNumber" name="SearchNumber" type="number" min="1" max="20" is="emby-input" />
-                        <div class="fieldDescription">
-                            How many search results should be returned for each category (movies and shows).
+    <head>
+        <meta charset="utf-8" />
+        <title>JF Resolve</title>
+    </head>
+    <body>
+        <div
+            id="JfresolveConfigPage"
+            data-role="page"
+            class="page type-interior pluginConfigurationPage"
+            data-require="emby-input,emby-button"
+        >
+            <div data-role="content">
+                <div class="content-primary">
+                    <form id="JfresolveConfigForm">
+                        <!-- TMDb API Key -->
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="TmdbApiKey"
+                                >TMDb API Key</label
+                            >
+                            <input
+                                id="TmdbApiKey"
+                                name="TmdbApiKey"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Enter your TMDb API key to fetch items for your
+                                library.
+                            </div>
                         </div>
-                    </div>                    
 
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="JellyfinBaseUrl">Jellyfin base url</label>
-                        <input id="JellyfinBaseUrl" name="JellyfinBaseUrl" type="text" is="emby-input" />
-                        <div class="fieldDescription">Enter your Jfresolve base url and port eg. (192.168.9.1:8096 or 127.0.0.1:8096).</div>
-                    </div>
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="SearchNumber"
+                                >Search Results</label
+                            >
+                            <input
+                                id="SearchNumber"
+                                name="SearchNumber"
+                                type="number"
+                                min="1"
+                                max="20"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                How many search results should be returned for
+                                each category (movies and shows).
+                            </div>
+                        </div>
 
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="AddonManifestUrl">Addon Link (Manifest JSON URL)</label>
-                        <input id="AddonManifestUrl" name="AddonManifestUrl" type="text" is="emby-input" />
-                        <div class="fieldDescription">Paste the URL to your addon manifest JSON file.</div>
-                    </div>
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="JellyfinBaseUrl"
+                                >Jellyfin base url</label
+                            >
+                            <input
+                                id="JellyfinBaseUrl"
+                                name="JellyfinBaseUrl"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Enter your Jfresolve base url and port eg.
+                                (192.168.9.1:8096 or 127.0.0.1:8096).
+                            </div>
+                        </div>
 
-                    <div class="checkboxContainer">
-                        <label>
-                            <input type="checkbox" id="IncludeAdult" is="emby-checkbox" />
-                            <span>Include Adult Content</span>
-                        </label>
-                    </div>
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="AddonManifestUrl"
+                                >Addon Link (Manifest JSON URL)</label
+                            >
+                            <input
+                                id="AddonManifestUrl"
+                                name="AddonManifestUrl"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Paste the URL to your addon manifest JSON file.
+                            </div>
+                        </div>
 
-                    <div class="checkboxContainer">
-                        <label>
-                            <input type="checkbox" id="IncludeUnreleased" is="emby-checkbox" />
-                            <span>Include Unreleased Titles</span>
-                        </label>
-                    </div>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    id="IncludeAdult"
+                                    is="emby-checkbox"
+                                />
+                                <span>Include Adult Content</span>
+                            </label>
+                        </div>
 
-                    <div class="checkboxContainer">
-                        <label>
-                            <input type="checkbox" id="IncludeSpecials" is="emby-checkbox" />
-                            <span>Include Specials (Season 0)</span>
-                        </label>
-                    </div>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    id="IncludeUnreleased"
+                                    is="emby-checkbox"
+                                />
+                                <span>Include Unreleased Titles</span>
+                            </label>
+                        </div>
 
-                    <hr>
-                    <h3>Library Paths</h3>
+                        <div class="checkboxContainer">
+                            <label>
+                                <input
+                                    type="checkbox"
+                                    id="IncludeSpecials"
+                                    is="emby-checkbox"
+                                />
+                                <span>Include Specials (Season 0)</span>
+                            </label>
+                        </div>
 
-                    <!-- Movies -->
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="MoviesLibraryPath">Movies Library Path</label>
-                        <input id="MoviesLibraryPath" name="MoviesLibraryPath" type="text" is="emby-input" />
-                        <div class="fieldDescription">Full path where movies should be populated (e.g., /data/movies).</div>
-                    </div>
+                        <hr />
+                        <h3>Library Paths</h3>
 
-                    <!-- TV Shows -->
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="ShowsLibraryPath">TV Shows Library Path</label>
-                        <input id="ShowsLibraryPath" name="ShowsLibraryPath" type="text" is="emby-input" />
-                        <div class="fieldDescription">Full path where TV shows should be populated (e.g., /data/shows).</div>
-                    </div>
+                        <!-- Movies -->
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="MoviesLibraryPath"
+                                >Movies Library Path</label
+                            >
+                            <input
+                                id="MoviesLibraryPath"
+                                name="MoviesLibraryPath"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Full path where movies should be populated
+                                (e.g., /data/movies).
+                            </div>
+                        </div>
 
-                    <!-- Anime (optional) -->
-                    <div class="inputContainer">
-                        <label class="inputLabel inputLabelUnfocused" for="AnimeLibraryPath">Anime Library Path (Optional)</label>
-                        <input id="AnimeLibraryPath" name="AnimeLibraryPath" type="text" is="emby-input" />
-                        <div class="fieldDescription">Optional path for anime (e.g., /data/anime).</div>
-                    </div>
+                        <!-- TV Shows -->
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="ShowsLibraryPath"
+                                >TV Shows Library Path</label
+                            >
+                            <input
+                                id="ShowsLibraryPath"
+                                name="ShowsLibraryPath"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Full path where TV shows should be populated
+                                (e.g., /data/shows).
+                            </div>
+                        </div>
 
-                    <!-- Populate Library Button -->
-                    <div class="inputContainer" style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #333;">
-                        <label class="inputLabel">Library Population</label>
-                        <button id="PopulateLibraryBtn" type="button" is="emby-button" class="raised button-submit block emby-button">
-                            <span>Populate Library Now</span>
-                        </button>
-                        <div class="fieldDescription">Manually trigger library population immediately.</div>
-                    </div>
+                        <!-- Anime (optional) -->
+                        <div class="inputContainer">
+                            <label
+                                class="inputLabel inputLabelUnfocused"
+                                for="AnimeLibraryPath"
+                                >Anime Library Path (Optional)</label
+                            >
+                            <input
+                                id="AnimeLibraryPath"
+                                name="AnimeLibraryPath"
+                                type="text"
+                                is="emby-input"
+                            />
+                            <div class="fieldDescription">
+                                Optional path for anime (e.g., /data/anime).
+                            </div>
+                        </div>
 
-                    <div>
-                        <button is="emby-button" type="submit" class="raised button-submit block emby-button">
-                            <span>Save</span>
-                        </button>
-                    </div>
-                </form>
+                        <!-- Populate Library Button -->
+                        <div
+                            class="inputContainer"
+                            style="
+                                margin-top: 20px;
+                                padding-top: 20px;
+                                border-top: 1px solid #333;
+                            "
+                        >
+                            <label class="inputLabel">Library Population</label>
+
+                            <div class="inputContainer">
+                                <label
+                                    class="inputLabel inputLabelUnfocused"
+                                    for="LibraryPopulationHour"
+                                    >Library Population Time (UTC)</label
+                                >
+                                <input
+                                    id="LibraryPopulationHour"
+                                    name="LibraryPopulationHour"
+                                    type="number"
+                                    min="0"
+                                    max="23"
+                                    is="emby-input"
+                                />
+                                <div class="fieldDescription">
+                                    Hour of the day (0-23) in UTC when library
+                                    population should run automatically. For
+                                    example, 3 means 3:00 AM UTC, 15 means 3:00
+                                    PM UTC.
+                                </div>
+                            </div>
+
+                            <button
+                                id="PopulateLibraryBtn"
+                                type="button"
+                                is="emby-button"
+                                class="raised button-submit block emby-button"
+                            >
+                                <span>Populate Library Now</span>
+                            </button>
+                            <div class="fieldDescription">
+                                Manually trigger library population immediately.
+                            </div>
+                        </div>
+
+                        <div>
+                            <button
+                                is="emby-button"
+                                type="submit"
+                                class="raised button-submit block emby-button"
+                            >
+                                <span>Save</span>
+                            </button>
+                        </div>
+                    </form>
+                </div>
             </div>
-        </div>
 
-        <script type="text/javascript">
-            var JfresolveConfig = {
-                pluginUniqueId: '506F18B8-5DAD-4CD3-B9A0-F7ED933E9939'
-            };
+            <script type="text/javascript">
+                var JfresolveConfig = {
+                    pluginUniqueId: "506F18B8-5DAD-4CD3-B9A0-F7ED933E9939",
+                };
 
-            // Load plugin config into form
-            document.querySelector('#JfresolveConfigPage').addEventListener('pageshow', function() {
-                Dashboard.showLoadingMsg();
-                ApiClient.getPluginConfiguration(JfresolveConfig.pluginUniqueId).then(function(config) {
-                    document.querySelector('#TmdbApiKey').value = config.TmdbApiKey || '';
-                    document.querySelector('#MoviesLibraryPath').value = config.MoviesLibraryPath || '';
-                    document.querySelector('#ShowsLibraryPath').value = config.ShowsLibraryPath || '';
-                    document.querySelector('#AnimeLibraryPath').value = config.AnimeLibraryPath || '';
-                    document.querySelector('#JellyfinBaseUrl').value = config.JellyfinBaseUrl || '';
-                    document.querySelector('#AddonManifestUrl').value = config.AddonManifestUrl || '';
-                    document.querySelector('#IncludeAdult').checked = config.IncludeAdult || false;
-                    document.querySelector('#IncludeUnreleased').checked = config.IncludeUnreleased || false;
-                    document.querySelector('#IncludeSpecials').checked = config.IncludeSpecials || false;
-                    document.querySelector('#SearchNumber').value = config.SearchNumber || 3;
-                    Dashboard.hideLoadingMsg();
-                });
-            });
-
-            // Save plugin config from form
-            document.querySelector('#JfresolveConfigForm').addEventListener('submit', function(e) {
-                e.preventDefault();
-                Dashboard.showLoadingMsg();
-                ApiClient.getPluginConfiguration(JfresolveConfig.pluginUniqueId).then(function(config) {
-                    config.TmdbApiKey = document.querySelector('#TmdbApiKey').value;
-                    config.MoviesLibraryPath = document.querySelector('#MoviesLibraryPath').value;
-                    config.ShowsLibraryPath = document.querySelector('#ShowsLibraryPath').value;
-                    config.AnimeLibraryPath = document.querySelector('#AnimeLibraryPath').value;
-                    config.JellyfinBaseUrl = document.querySelector('#JellyfinBaseUrl').value.trim() || 'http://127.0.0.1:8096';
-                    config.AddonManifestUrl = document.querySelector('#AddonManifestUrl').value;
-                    config.IncludeAdult = document.querySelector('#IncludeAdult').checked;
-                    config.IncludeUnreleased = document.querySelector('#IncludeUnreleased').checked;
-                    config.IncludeSpecials = document.querySelector('#IncludeSpecials').checked;
-                    config.SearchNumber = parseInt(document.querySelector('#SearchNumber').value, 10) || 3;
-                    ApiClient.updatePluginConfiguration(JfresolveConfig.pluginUniqueId, config)
-                        .then(function(result) {
-                            Dashboard.processPluginConfigurationUpdateResult(result);
+                // Load plugin config into form
+                document
+                    .querySelector("#JfresolveConfigPage")
+                    .addEventListener("pageshow", function () {
+                        Dashboard.showLoadingMsg();
+                        ApiClient.getPluginConfiguration(
+                            JfresolveConfig.pluginUniqueId,
+                        ).then(function (config) {
+                            document.querySelector("#TmdbApiKey").value =
+                                config.TmdbApiKey || "";
+                            document.querySelector("#MoviesLibraryPath").value =
+                                config.MoviesLibraryPath || "";
+                            document.querySelector("#ShowsLibraryPath").value =
+                                config.ShowsLibraryPath || "";
+                            document.querySelector("#AnimeLibraryPath").value =
+                                config.AnimeLibraryPath || "";
+                            document.querySelector("#JellyfinBaseUrl").value =
+                                config.JellyfinBaseUrl || "";
+                            document.querySelector("#AddonManifestUrl").value =
+                                config.AddonManifestUrl || "";
+                            document.querySelector("#IncludeAdult").checked =
+                                config.IncludeAdult || false;
+                            document.querySelector(
+                                "#IncludeUnreleased",
+                            ).checked = config.IncludeUnreleased || false;
+                            document.querySelector("#IncludeSpecials").checked =
+                                config.IncludeSpecials || false;
+                            document.querySelector("#SearchNumber").value =
+                                config.SearchNumber || 3;
+                            document.querySelector(
+                                "#LibraryPopulationHour",
+                            ).value =
+                                config.LibraryPopulationHour != null
+                                    ? config.LibraryPopulationHour
+                                    : 3;
+                            Dashboard.hideLoadingMsg();
                         });
-                });
-            });
+                    });
 
-            // Populate library button
-            document.querySelector('#PopulateLibraryBtn').addEventListener('click', function() {
-                Dashboard.showLoadingMsg();
-                ApiClient.ajax({
-                    type: 'POST',
-                    url: ApiClient.getUrl('Plugins/Jfresolve/PopulateLibrary'),
-                    dataType: 'json'
-                }).then(function() {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Library population started successfully.');
-                }).catch(function(error) {
-                    Dashboard.hideLoadingMsg();
-                    Dashboard.alert('Error: ' + (error.statusText || 'Unknown error'));
-                });
-            });
+                // Save plugin config from form
+                document
+                    .querySelector("#JfresolveConfigForm")
+                    .addEventListener("submit", function (e) {
+                        e.preventDefault();
+                        Dashboard.showLoadingMsg();
+                        ApiClient.getPluginConfiguration(
+                            JfresolveConfig.pluginUniqueId,
+                        ).then(function (config) {
+                            config.TmdbApiKey =
+                                document.querySelector("#TmdbApiKey").value;
+                            config.MoviesLibraryPath =
+                                document.querySelector(
+                                    "#MoviesLibraryPath",
+                                ).value;
+                            config.ShowsLibraryPath =
+                                document.querySelector(
+                                    "#ShowsLibraryPath",
+                                ).value;
+                            config.AnimeLibraryPath =
+                                document.querySelector(
+                                    "#AnimeLibraryPath",
+                                ).value;
+                            config.JellyfinBaseUrl =
+                                document
+                                    .querySelector("#JellyfinBaseUrl")
+                                    .value.trim() || "http://127.0.0.1:8096";
+                            config.AddonManifestUrl =
+                                document.querySelector(
+                                    "#AddonManifestUrl",
+                                ).value;
+                            config.IncludeAdult =
+                                document.querySelector("#IncludeAdult").checked;
+                            config.IncludeUnreleased =
+                                document.querySelector(
+                                    "#IncludeUnreleased",
+                                ).checked;
+                            config.IncludeSpecials =
+                                document.querySelector(
+                                    "#IncludeSpecials",
+                                ).checked;
+                            config.SearchNumber =
+                                parseInt(
+                                    document.querySelector("#SearchNumber")
+                                        .value,
+                                    10,
+                                ) || 3;
+                            var parsedHour = parseInt(
+                                document.querySelector("#LibraryPopulationHour")
+                                    .value,
+                                10,
+                            );
+                            config.LibraryPopulationHour =
+                                !isNaN(parsedHour) &&
+                                parsedHour >= 0 &&
+                                parsedHour <= 23
+                                    ? parsedHour
+                                    : 3;
+                            ApiClient.updatePluginConfiguration(
+                                JfresolveConfig.pluginUniqueId,
+                                config,
+                            ).then(function (result) {
+                                Dashboard.processPluginConfigurationUpdateResult(
+                                    result,
+                                );
+                            });
+                        });
+                    });
 
-        </script>
-    </div>
-</body>
+                // Populate library button
+                document
+                    .querySelector("#PopulateLibraryBtn")
+                    .addEventListener("click", function () {
+                        Dashboard.showLoadingMsg();
+                        ApiClient.ajax({
+                            type: "POST",
+                            url: ApiClient.getUrl(
+                                "Plugins/Jfresolve/PopulateLibrary",
+                            ),
+                            dataType: "json",
+                        })
+                            .then(function () {
+                                Dashboard.hideLoadingMsg();
+                                Dashboard.alert(
+                                    "Library population started successfully.",
+                                );
+                            })
+                            .catch(function (error) {
+                                Dashboard.hideLoadingMsg();
+                                Dashboard.alert(
+                                    "Error: " +
+                                        (error.statusText || "Unknown error"),
+                                );
+                            });
+                    });
+            </script>
+        </div>
+    </body>
 </html>

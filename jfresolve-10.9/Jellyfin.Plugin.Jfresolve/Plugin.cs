@@ -140,20 +140,25 @@ namespace Jellyfin.Plugin.Jfresolve
         /// </summary>
         private async System.Threading.Tasks.Task RunPopulationIfDueAsync()
         {
-            var now = DateTime.UtcNow;
-            var targetHour = 3;
-
-            if (now.Hour == targetHour && (Configuration.LastPopulationUtc?.Date != now.Date))
+            if (Configuration == null || !Configuration.EnableLibraryPopulation)
             {
-                _logger.LogInformation("Starting daily media library population at {0:HH:mm} UTC...", now);
-                await PopulateLibraryAsync().ConfigureAwait(false);
-                Configuration.LastPopulationUtc = now;
-                SaveConfiguration();
-                _logger.LogInformation("Daily media library population completed successfully at {0:HH:mm} UTC.", now);
+                return;
             }
-            else
+
+            var now = DateTime.UtcNow;
+            var targetHour = Configuration?.LibraryPopulationHour ?? 3;
+
+            if (now.Hour == targetHour && (Configuration?.LastPopulationUtc?.Date != now.Date))
             {
-                _logger.LogInformation("Daily population skipped. Current time: {0:HH:mm} UTC. Last run: {1}.", now, Configuration.LastPopulationUtc);
+                _logger.LogInformation("Starting daily media library population at {0:HH:mm} UTC (configured for hour {1})...", now, targetHour);
+                await PopulateLibraryAsync().ConfigureAwait(false);
+                if (Configuration != null)
+                {
+                    Configuration.LastPopulationUtc = now;
+                    SaveConfiguration();
+                }
+
+                _logger.LogInformation("Daily media library population completed successfully at {0:HH:mm} UTC.", now);
             }
         }
     }

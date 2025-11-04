@@ -21,6 +21,7 @@ namespace Jfresolve
         private JfResolveManager? _manager;
         private ILogger<JfresolvePlugin>? _logger;
         private ILoggerFactory? _loggerFactory;
+        private System.Timers.Timer? _dailyTimer;
         private bool _disposed;
 
         /// <summary>
@@ -43,14 +44,27 @@ namespace Jfresolve
             Instance = this;
             _loggerFactory = loggerFactory;
             _logger = loggerFactory.CreateLogger<JfresolvePlugin>();
-            _logger.LogInformation("[PLUGIN] JF Resolve plugin initialized");
+            _logger.LogInformation("[PLUGIN] jfresolve plugin initialized");
 
-            // Manager will be created by ServiceRegistrator with full DI
-            // This is just for scheduler initialization if needed later
+            // Initialize the daily timer for library population
+            InitializeDailyTimer();
+        }
+
+        /// <summary>
+        /// Initializes the daily timer for automatic library population.
+        /// </summary>
+        private void InitializeDailyTimer()
+        {
+            // Timer checks every 10 minutes
+            _dailyTimer = new System.Timers.Timer(TimeSpan.FromMinutes(10).TotalMilliseconds);
+            _dailyTimer.Elapsed += async (s, e) => await RunPopulationIfDueAsync().ConfigureAwait(false);
+            _dailyTimer.AutoReset = true;
+            _dailyTimer.Start();
+            _logger?.LogInformation("[PLUGIN] Daily library population scheduler initialized");
         }
 
         /// <inheritdoc />
-        public override string Name => "JF Resolve";
+        public override string Name => "jfresolve";
 
         /// <inheritdoc />
         public override Guid Id => Guid.Parse("506F18B8-5DAD-4CD3-B9A0-F7ED933E9939");
@@ -73,11 +87,35 @@ namespace Jfresolve
         public override void UpdateConfiguration(BasePluginConfiguration configuration)
         {
             base.UpdateConfiguration(configuration);
-            _logger?.LogInformation("[PLUGIN] Configuration updated");
+            _logger?.LogInformation("[PLUGIN] Configuration updated - Library population hour set to {Hour} UTC", Configuration?.LibraryPopulationHour ?? 3);
 
             // Manager will be recreated by DI when needed
             _manager?.Dispose();
             _manager = null;
+        }
+
+        /// <summary>
+        /// Checks if library population should run at the configured time.
+        /// Runs once per day at the configured hour.
+        /// </summary>
+        private async System.Threading.Tasks.Task RunPopulationIfDueAsync()
+        {
+            if (Configuration == null || !Configuration.EnableLibraryPopulation)
+            {
+                return;
+            }
+
+            var now = DateTime.UtcNow;
+            var targetHour = Configuration.LibraryPopulationHour;
+
+            if (now.Hour == targetHour && (Configuration.LastPopulationUtc?.Date != now.Date))
+            {
+                _logger?.LogInformation("[PLUGIN] Starting daily library population at {Time:HH:mm} UTC (configured for hour {Hour})...", now, targetHour);
+                await PopulateLibraryAsync().ConfigureAwait(false);
+                Configuration.LastPopulationUtc = now;
+                SaveConfiguration();
+                _logger?.LogInformation("[PLUGIN] Daily library population completed successfully at {Time:HH:mm} UTC.", now);
+            }
         }
 
         /// <summary>
@@ -128,8 +166,16 @@ namespace Jfresolve
 
             if (disposing)
             {
+                // Stop and dispose the daily timer
+                if (_dailyTimer != null)
+                {
+                    _dailyTimer.Stop();
+                    _dailyTimer.Dispose();
+                    _dailyTimer = null;
+                }
+
                 _manager?.Dispose();
-                _logger?.LogInformation("[PLUGIN] JF Resolve plugin disposed");
+                _logger?.LogInformation("[PLUGIN] jfresolve plugin disposed");
             }
 
             _disposed = true;

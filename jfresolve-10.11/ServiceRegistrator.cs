@@ -57,10 +57,11 @@ namespace Jfresolve
     /// Sets probe size and analyze duration for better remote stream detection.
     /// This is especially important for streaming from torrent providers and other remote sources.
     /// </summary>
-    public class FFmpegConfigSetter : IHostedService
+    public class FFmpegConfigSetter : IHostedService, IAsyncDisposable
     {
         private readonly IConfiguration _config;
         private readonly ILogger<FFmpegConfigSetter> _logger;
+        private bool _disposed;
 
         public FFmpegConfigSetter(IConfiguration config, ILogger<FFmpegConfigSetter> logger)
         {
@@ -110,7 +111,40 @@ namespace Jfresolve
 
         /// <summary>
         /// Called when the hosted service is stopping.
+        /// Performs cleanup before the plugin is unloaded.
         /// </summary>
-        public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+        public Task StopAsync(CancellationToken cancellationToken)
+        {
+            try
+            {
+                _logger?.LogInformation("[Jfresolve] FFmpegConfigSetter stopping");
+                return Task.CompletedTask;
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[Jfresolve] Error stopping FFmpegConfigSetter");
+                return Task.CompletedTask;
+            }
+        }
+
+        /// <summary>
+        /// Disposes the FFmpeg config setter service.
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            try
+            {
+                await StopAsync(CancellationToken.None).ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[Jfresolve] Error during FFmpegConfigSetter disposal");
+            }
+
+            _disposed = true;
+        }
     }
 }

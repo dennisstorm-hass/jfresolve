@@ -9,20 +9,20 @@
     "imageUrl": "https://raw.githubusercontent.com/vicking20/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.1.0.0",
-        "changelog": "Jfresolve plugin for jellyfin version 10.11.x.x",
-        "sourceUrl": "https://github.com/vicking20/jfresolve/releases/download/10.11.1.1.0.0/jfresolve_10.11_1.1.0.0.zip",
-        "checksum": "E3AEE2E88545FA93F2F639FD2C79A976",
+        "version": "11.0.0.0",
+        "changelog": "Jfresolve plugin for jellyfin version 11.0.x.x - Added configurable library population scheduling, fixed plugin disposal on uninstall, improved version segmentation",
+        "sourceUrl": "https://github.com/vicking20/jfresolve/releases/download/10.11.1.1.0.0/jfresolve_10.11_11.0.0.0.zip",
+        "checksum": "dae46f97eb9c64af9ad2f7b6e9de645e",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2025-11-04T00:00:00Z"
+        "timestamp": "2025-11-04T12:04:00Z"
       },
       {
-        "version": "1.0.0.0",
-        "changelog": "Jfresolve plugin for jellyfin version 10.9.x.x",
-        "sourceUrl": "https://github.com/vicking20/jfresolve/releases/download/10.9.1.0.0.0/jfresolve_10.9_1.0.0.0.zip",
-        "checksum": "sha256:637d911dc0c1e2b78a32c7d20ee7ae8ded23fa8f151c6600e3ddf947ec25dae8",
+        "version": "10.9.0.0",
+        "changelog": "Jfresolve plugin for jellyfin version 10.9.x.x - Added configurable library population scheduling, improved version segmentation",
+        "sourceUrl": "https://github.com/vicking20/jfresolve/releases/download/10.9.1.0.0.0/jfresolve_10.9_10.9.0.0.zip",
+        "checksum": "b718b04961f719400acb7de1785760e6",
         "targetAbi": "10.9.0.0",
-        "timestamp": "2025-11-04T00:00:00Z"
+        "timestamp": "2025-11-04T12:04:00Z"
       }
     ]
   }

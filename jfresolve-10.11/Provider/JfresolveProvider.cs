@@ -113,7 +113,7 @@ namespace Jfresolve.Provider
         }
     }
 
-    public class JfresolveProvider
+    public class JfresolveProvider : IAsyncDisposable
     {
         private const string TmdbBaseUrl = "https://api.themoviedb.org/3";
         private const string TmdbImageBaseUrl = "https://www.themoviedb.org/t/p/w342";
@@ -122,6 +122,7 @@ namespace Jfresolve.Provider
         private readonly ILibraryManager _libraryManager;
         private readonly IHttpClientFactory _httpClientFactory;
         private readonly ILogger<JfresolveProvider> _logger;
+        private bool _disposed;
 
         public Dictionary<Guid, ExternalMeta> MetaCache { get; } = new();
 
@@ -471,6 +472,28 @@ namespace Jfresolve.Provider
             }
 
             return item;
+        }
+
+        /// <summary>
+        /// Disposes the provider and cleans up resources.
+        /// </summary>
+        public async ValueTask DisposeAsync()
+        {
+            if (_disposed)
+                return;
+
+            try
+            {
+                _logger.LogDebug("[JfresolveProvider] Disposing JfresolveProvider");
+                MetaCache?.Clear();
+            }
+            catch (Exception ex)
+            {
+                _logger?.LogError(ex, "[JfresolveProvider] Error during disposal");
+            }
+
+            _disposed = true;
+            await ValueTask.CompletedTask.ConfigureAwait(false);
         }
     }
 }

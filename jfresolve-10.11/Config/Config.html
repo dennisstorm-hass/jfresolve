@@ -276,6 +276,28 @@
                             <div class="inputContainer">
                                 <label
                                     class="inputLabel inputLabelUnfocused"
+                                    for="LibraryPopulationHour"
+                                    >Library Population Time (UTC)</label
+                                >
+                                <input
+                                    id="LibraryPopulationHour"
+                                    name="LibraryPopulationHour"
+                                    type="number"
+                                    min="0"
+                                    max="23"
+                                    is="emby-input"
+                                />
+                                <div class="fieldDescription">
+                                    Hour of the day (0-23) in UTC when library
+                                    population should run automatically. For
+                                    example, 3 means 3:00 AM UTC, 15 means 3:00
+                                    PM UTC.
+                                </div>
+                            </div>
+
+                            <div class="inputContainer">
+                                <label
+                                    class="inputLabel inputLabelUnfocused"
                                     for="ItemsPerRequest"
                                     >Items Per Request</label
                                 >
@@ -436,6 +458,12 @@
                             document.querySelector(
                                 "#EnableLibraryPopulation",
                             ).checked = config.EnableLibraryPopulation || false;
+                            document.querySelector(
+                                "#LibraryPopulationHour",
+                            ).value =
+                                config.LibraryPopulationHour != null
+                                    ? config.LibraryPopulationHour
+                                    : 3;
                             document.querySelector("#ItemsPerRequest").value =
                                 config.ItemsPerRequest != null
                                     ? config.ItemsPerRequest
@@ -533,6 +561,17 @@
                                 document.querySelector(
                                     "#EnableLibraryPopulation",
                                 ).checked;
+                            var parsedHour = parseInt(
+                                document.querySelector("#LibraryPopulationHour")
+                                    .value,
+                                10,
+                            );
+                            config.LibraryPopulationHour =
+                                !isNaN(parsedHour) &&
+                                parsedHour >= 0 &&
+                                parsedHour <= 23
+                                    ? parsedHour
+                                    : 3;
                             config.ItemsPerRequest =
                                 parseInt(
                                     document.querySelector("#ItemsPerRequest")
