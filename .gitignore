@@ -1,0 +1,86 @@
+# Build artifacts
+bin/
+obj/
+*.dll
+*.exe
+*.so
+*.dylib
+
+# IDE and editor files
+.vscode/
+.vs/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+*.sublime-project
+*.sublime-workspace
+
+# Visual Studio files
+*.user
+*.userprefs
+.vscodedb
+*.suo
+.vs/
+
+# Build output
+*.o
+*.a
+*.lib
+*.out
+
+# Dependency directories
+node_modules/
+packages/
+.nuget/
+
+# Testing
+*.coverage
+.coverage
+.pytest_cache/
+coverage/
+
+# Temporary files
+*.tmp
+*.bak
+*.backup
+*.swp
+*~
+.~*
+
+# NuGet
+.nuget/
+*.nupkg
+*.snupkg
+
+# Package management
+.paket/paket.exe
+
+# OS specific
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Local development files
+local.settings.json
+launchSettings.json
+
+# Build specific
+.msbuild.log
+
+# Rider
+.idea/
+*.sln.iml
+.rider/
+
+# Mac OS specific
+.AppleDouble
+.LSOverride
+._*
+
+# BinLog files
+*.binlog
+
+# Config overrides (for local testing)
+*.config.local
