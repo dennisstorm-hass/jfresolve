@@ -52,24 +52,30 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 }
 
 /// <summary>
-/// Background service that applies FFmpeg configuration on startup (Gelato pattern)
+/// Background service that applies FFmpeg configuration on startup and initializes folders (Gelato pattern)
 /// </summary>
 public class JfresolveFFmpegConfigService : IHostedService
 {
     private readonly IConfiguration _config;
     private readonly ILogger<JfresolveFFmpegConfigService> _log;
+    private readonly JfresolveManager _manager;
 
     public JfresolveFFmpegConfigService(
         IConfiguration config,
-        ILogger<JfresolveFFmpegConfigService> log)
+        ILogger<JfresolveFFmpegConfigService> log,
+        JfresolveManager manager)
     {
         _config = config;
         _log = log;
+        _manager = manager;
     }
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
         var config = JfresolvePlugin.Instance?.Configuration;
+
+        // Initialize seed folders on startup
+        InitializeFolders(config);
 
         // Only apply custom FFmpeg settings if enabled
         if (config?.EnableCustomFFmpegSettings == true)
@@ -97,6 +103,45 @@ public class JfresolveFFmpegConfigService : IHostedService
     }
 
     public Task StopAsync(CancellationToken cancellationToken) => Task.CompletedTask;
+
+    /// <summary>
+    /// Initialize seed folders for all configured library paths
+    /// </summary>
+    private void InitializeFolders(Configuration.PluginConfiguration? config)
+    {
+        if (config == null)
+        {
+            _log.LogWarning("Jfresolve: Plugin configuration is null, skipping folder initialization");
+            return;
+        }
+
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(config.MoviePath))
+            {
+                JfresolveManager.SeedFolder(config.MoviePath);
+                _log.LogInformation("Jfresolve: Initialized seed folder for movies at '{Path}'", config.MoviePath);
+            }
+
+            if (!string.IsNullOrWhiteSpace(config.SeriesPath))
+            {
+                JfresolveManager.SeedFolder(config.SeriesPath);
+                _log.LogInformation("Jfresolve: Initialized seed folder for series at '{Path}'", config.SeriesPath);
+            }
+
+            if (config.EnableAnimeFolder && !string.IsNullOrWhiteSpace(config.AnimePath))
+            {
+                JfresolveManager.SeedFolder(config.AnimePath);
+                _log.LogInformation("Jfresolve: Initialized seed folder for anime at '{Path}'", config.AnimePath);
+            }
+
+            _log.LogInformation("Jfresolve: Folder initialization complete");
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Jfresolve: Failed to initialize seed folders");
+        }
+    }
 }
 
 // Extension methods for service decoration
