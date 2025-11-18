@@ -12,7 +12,7 @@
         "version": "1.0.0.3",
         "changelog": "Code overhaul, new methods for search, save and auto populate",
         "sourceUrl": "https://github.com/vicking20/jfresolve/releases/download/10.11.1.0.0.3/jfresolve.zip",
-        "checksum": "478b2d73f51feb401b60add1a85844d2",
+        "checksum": "c84a8c0c5add7e7c3a4659a9a4bfe197",
         "targetAbi": "10.11.0.0",
         "timestamp": "2025-11-18T12:10:00Z"
       },

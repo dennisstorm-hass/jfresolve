@@ -229,8 +229,8 @@ public class JfresolveManager
             if (folder is null)
             {
                 _log.LogWarning(
-                    "Jfresolve: No folder found at path '{Path}'. Make sure this folder exists as a Jellyfin library and has been scanned at least once. " +
-                    "Try: Dashboard → Libraries → [Your TV Library] → Scan Library, then restart Jellyfin.",
+                    "Jfresolve: No folder found at path '{Path}'. This library must be scanned at least once. " +
+                    "Go to: Dashboard → Libraries → [Your Library] → Scan Library (the 3-dot menu), then wait for completion.",
                     path
                 );
             }
@@ -245,16 +245,14 @@ public class JfresolveManager
         catch (InvalidOperationException ex) when (ex.Message.Contains("Cannot deserialize unknown type"))
         {
             _log.LogError(ex,
-                "Jfresolve: Database contains items that cannot be deserialized (possibly from deleted plugins). " +
-                "The folder at path '{Path}' cannot be queried. " +
-                "Please ensure this path exists as a Jellyfin library: Dashboard → Libraries → Add Media Library. " +
-                "If the library exists, you may need to clean your Jellyfin database to remove orphaned items.",
+                "Jfresolve: Database has orphaned items from deleted plugins. The folder at path '{Path}' cannot be queried. " +
+                "Please scan your library to rebuild the database: Dashboard → Libraries → [Your Library] → Scan Library (the 3-dot menu).",
                 path);
             return null;
         }
         catch (Exception ex)
         {
-            _log.LogError(ex, "Jfresolve: Unexpected error querying for folder at path '{Path}'", path);
+            _log.LogError(ex, "Jfresolve: Unexpected error querying for folder at path '{Path}'. Please scan your library first.", path);
             return null;
         }
     }
