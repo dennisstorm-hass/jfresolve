@@ -18,6 +18,8 @@ A Jellyfin plugin that integrates external streaming sources (Stremio addons) fr
   </a>
 </p>
 
+Similar project: If you aren't interested in using the plugin, you can instead use the webapp: [**JF-Resolve**](https://github.com/vicking20/jf-resolve) directly with Jellyfin.
+
 ## Features
 
 - **External Search Results**: Search TMDB and display results from external streaming sources.
