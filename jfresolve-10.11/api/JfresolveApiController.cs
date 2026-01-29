@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Concurrent;
+using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
 using Microsoft.AspNetCore.Authorization;
@@ -16,6 +18,7 @@ namespace Jfresolve.Api;
 /// </summary>
 [ApiController]
 [Route("Plugins/Jfresolve")]
+[Route("Plugins/506f18b85dad4cd3b9a0f7ed933e9939")] // Alternative route using plugin GUID for image requests
 public class JfresolveApiController : ControllerBase
 {
     private readonly ILogger<JfresolveApiController> _logger;
@@ -254,6 +257,61 @@ public class JfresolveApiController : ControllerBase
         {
             _logger.LogError(ex, "Jfresolve: Error resolving stream for {Type}/{Id}", type, id);
             return StatusCode(500, $"Error resolving stream: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Serves the plugin image (jfresolve.png)
+    /// Jellyfin requests this from /Plugins/{guid}/{version}/Image
+    /// </summary>
+    [HttpGet("Image")]
+    [HttpGet("{version}/Image")] // Handle versioned requests: /Plugins/{guid}/{version}/Image
+    [AllowAnonymous]
+    public IActionResult GetPluginImage(string? version = null)
+    {
+        try
+        {
+            _logger.LogDebug("Jfresolve: Plugin image requested (version: {Version})", version ?? "none");
+            
+            var assembly = Assembly.GetExecutingAssembly();
+            
+            // Try different possible resource names
+            var possibleNames = new[]
+            {
+                "Jfresolve.jfresolve.png",
+                "jfresolve.jfresolve.png",
+                "Jfresolve.jfresolve-10.11.jfresolve.png"
+            };
+            
+            Stream? imageStream = null;
+            string? foundResourceName = null;
+            
+            foreach (var resourceName in possibleNames)
+            {
+                imageStream = assembly.GetManifestResourceStream(resourceName);
+                if (imageStream != null)
+                {
+                    foundResourceName = resourceName;
+                    _logger.LogDebug("Jfresolve: Found plugin image resource: {ResourceName}", resourceName);
+                    break;
+                }
+            }
+            
+            // If not found, list all resources for debugging
+            if (imageStream == null)
+            {
+                var allResources = assembly.GetManifestResourceNames();
+                _logger.LogWarning("Jfresolve: Plugin image resource not found. Available resources: {Resources}", 
+                    string.Join(", ", allResources));
+                return NotFound("Plugin image not found");
+            }
+
+            return File(imageStream, "image/png");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Jfresolve: Error serving plugin image");
+            return StatusCode(500, "Error serving plugin image");
         }
     }
 

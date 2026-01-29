@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Jfresolve</AssemblyName>
     <RootNamespace>Jfresolve</RootNamespace>
-    <Version>1.0.0.12</Version>
-    <AssemblyVersion>1.0.0.12</AssemblyVersion>
-    <FileVersion>1.0.0.12</FileVersion>
+    <Version>1.0.0.13</Version>
+    <AssemblyVersion>1.0.0.13</AssemblyVersion>
+    <FileVersion>1.0.0.13</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -20,6 +20,8 @@
   <ItemGroup>
     <None Remove="Config\config.html" />
     <EmbeddedResource Include="Config\config.html" />
+    <None Remove="jfresolve.png" />
+    <EmbeddedResource Include="jfresolve.png" />
   </ItemGroup>
 
 </Project>

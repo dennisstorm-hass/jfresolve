@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.13",
+        "changelog": "Fixed plugin image not loading: Added embedded resource for jfresolve.png and created Image endpoint to serve it. Added route handling for both /Plugins/Jfresolve/Image and /Plugins/{guid}/{version}/Image patterns.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.13/jfresolve.zip",
+        "checksum": "d9ab313237ab917a0626c0d2bcbfecb5",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-01-29T13:45:00Z"
+      },
+      {
         "version": "1.0.0.12",
         "changelog": "Fixed Content-Range header handling error: Changed from Contains/GetValues to TryGetValues to properly handle Content-Range header copying without throwing InvalidOperationException. Now checks both response headers and content headers.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.12/jfresolve.zip",
