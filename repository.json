@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.11",
+        "changelog": "Fixed Jellyfin 10.11.6 compatibility: Updated NuGet packages to 10.11.6 and implemented ReattachUserDataAsync with correct signature (BaseItem, CancellationToken). This resolves the interface implementation error.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.11/jfresolve.zip",
+        "checksum": "f8a62351dcfed6db9383b87044a2ea19",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-01-29T13:15:00Z"
+      },
+      {
         "version": "1.0.0.10",
         "changelog": "Fixed Jellyfin 10.11.6 compatibility: Improved ReattachUserDataAsync implementation using reflection with proper BindingFlags to ensure interface contract is satisfied at runtime.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.10/jfresolve.zip",

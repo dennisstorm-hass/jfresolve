@@ -94,42 +94,10 @@ public sealed class JfresolveItemRepository : IItemRepository
     public IReadOnlyDictionary<string, MediaBrowser.Controller.Entities.Audio.MusicArtist[]> FindArtists(IReadOnlyList<string> artistNames) => _inner.FindArtists(artistNames);
     
     // Jellyfin 10.11.6 compatibility: ReattachUserDataAsync was added to IItemRepository
-    // The method doesn't exist in compile-time interface (10.11.0) but is required at runtime (10.11.6)
-    // This implementation satisfies the interface contract - the actual call uses reflection/dynamic
-    public Task ReattachUserDataAsync(CancellationToken cancellationToken)
+    // Now that we're using 10.11.6 NuGet packages, we can implement it directly
+    public Task ReattachUserDataAsync(BaseItem item, CancellationToken cancellationToken)
     {
-        // Try to get the method from the interface type at runtime
-        var interfaceType = typeof(IItemRepository);
-        var methodInfo = interfaceType.GetMethod("ReattachUserDataAsync", 
-            BindingFlags.Public | BindingFlags.Instance, 
-            null, 
-            new[] { typeof(CancellationToken) }, 
-            null);
-        
-        if (methodInfo != null)
-        {
-            try
-            {
-                var result = methodInfo.Invoke(_inner, new object[] { cancellationToken });
-                return result as Task ?? Task.CompletedTask;
-            }
-            catch
-            {
-                // If invocation fails, fall through to dynamic
-            }
-        }
-        
-        // Fallback: use dynamic to call the method (works if method exists on concrete type)
-        try
-        {
-            dynamic inner = _inner;
-            return inner.ReattachUserDataAsync(cancellationToken);
-        }
-        catch
-        {
-            // Method doesn't exist in this Jellyfin version - return completed task
-            return Task.CompletedTask;
-        }
+        return _inner.ReattachUserDataAsync(item, cancellationToken);
     }
 }
 
