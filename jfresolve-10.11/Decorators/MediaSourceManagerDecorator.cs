@@ -1,3 +1,4 @@
+#nullable disable
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -160,7 +161,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     /// <summary>
     /// Check if a media source needs to be probed
     /// </summary>
-    private bool NeedsProbe(MediaSourceInfo? source)
+    private bool NeedsProbe(MediaSourceInfo source)
     {
         if (source == null) return false;
 
@@ -212,7 +213,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
     }
 
-    public IReadOnlyList<MediaSourceInfo> GetStaticMediaSources(BaseItem item, bool enablePathSubstitution, User? user = null)
+    public IReadOnlyList<MediaSourceInfo> GetStaticMediaSources(BaseItem item, bool enablePathSubstitution, User user = null)
     {
         var sources = _inner.GetStaticMediaSources(item, enablePathSubstitution, user).ToList();
 
