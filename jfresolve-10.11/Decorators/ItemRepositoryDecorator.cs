@@ -4,6 +4,8 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
+using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Persistence;
@@ -89,6 +91,24 @@ public sealed class JfresolveItemRepository : IItemRepository
     public System.Threading.Tasks.Task<bool> ItemExistsAsync(Guid id) => _inner.ItemExistsAsync(id);
     public bool GetIsPlayed(Jellyfin.Database.Implementations.Entities.User user, Guid id, bool recursive) => _inner.GetIsPlayed(user, id, recursive);
     public IReadOnlyDictionary<string, MediaBrowser.Controller.Entities.Audio.MusicArtist[]> FindArtists(IReadOnlyList<string> artistNames) => _inner.FindArtists(artistNames);
+    
+    // Jellyfin 10.11.6 compatibility: ReattachUserDataAsync was added to IItemRepository
+    // Use reflection to call it if it exists, otherwise return completed task
+    public Task ReattachUserDataAsync(CancellationToken cancellationToken)
+    {
+        var method = _inner.GetType().GetMethod("ReattachUserDataAsync", 
+            System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Instance);
+        
+        if (method != null)
+        {
+            var result = method.Invoke(_inner, new object[] { cancellationToken });
+            return result as Task ?? Task.CompletedTask;
+        }
+        
+        // Method doesn't exist in the interface version we're building against, but might exist at runtime
+        // Return completed task as fallback
+        return Task.CompletedTask;
+    }
 }
 
 /// <summary>

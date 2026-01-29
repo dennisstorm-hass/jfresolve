@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.9",
+        "changelog": "Fixed Jellyfin 10.11.6 compatibility issue: Added missing ReattachUserDataAsync method implementation to ItemRepositoryDecorator using reflection for interface compatibility.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.9/jfresolve.zip",
+        "checksum": "6b89f1e15c011fa7b755bc857cef2e5b",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-01-29T12:45:00Z"
+      },
+      {
         "version": "1.0.0.8",
         "changelog": "Fixed Jellyfin 10.11.6 streaming compatibility with HTTP Range request support. Added proper stream proxying with unbuffered streaming, range request handling (206 Partial Content), and improved header forwarding for FFmpeg compatibility.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.8/jfresolve.zip",
