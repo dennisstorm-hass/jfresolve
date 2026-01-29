@@ -51,8 +51,9 @@ public class JfresolveApiController : ControllerBase
     /// <param name="id">The IMDb or TMDB ID</param>
     /// <param name="season">Optional season number (for series)</param>
     /// <param name="episode">Optional episode number (for series)</param>
-    /// <returns>Redirect to the stream URL</returns>
+    /// <returns>Proxied stream or error</returns>
     [HttpGet("resolve/{type}/{id}")]
+    [AllowAnonymous] // FFmpeg needs to access this endpoint without authentication
     public async Task<IActionResult> ResolveStream(
         string type,
         string id,
@@ -62,8 +63,9 @@ public class JfresolveApiController : ControllerBase
         [FromQuery] int? index = null)
     {
         _logger.LogInformation(
-            "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}",
-            type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A"
+            "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
+            type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A",
+            Request.Path, Request.Headers["Range"].ToString()
         );
 
         var config = JfresolvePlugin.Instance?.Configuration;
@@ -162,6 +164,7 @@ public class JfresolveApiController : ControllerBase
             // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
             // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
             // By proxying, FFmpeg gets the stream directly without needing to follow redirects
+            // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
             try
             {
                 _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
@@ -169,9 +172,22 @@ public class JfresolveApiController : ControllerBase
                 var streamHttpClient = _httpClientFactory.CreateClient();
                 streamHttpClient.Timeout = TimeSpan.FromMinutes(10); // Longer timeout for streaming
                 
+                // Handle HTTP Range requests for seeking (required by FFmpeg)
+                var rangeHeader = Request.Headers["Range"].ToString();
+                HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
+                
+                if (!string.IsNullOrEmpty(rangeHeader))
+                {
+                    _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
+                    requestMessage.Headers.Add("Range", rangeHeader);
+                }
+                
                 // Stream the content directly to the response
-                var streamResponse = await streamHttpClient.GetAsync(redirectUrl, HttpCompletionOption.ResponseHeadersRead);
+                var streamResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
                 streamResponse.EnsureSuccessStatusCode();
+
+                // Copy status code (206 for partial content if range was requested)
+                Response.StatusCode = (int)streamResponse.StatusCode;
 
                 // Copy headers that might be important for streaming
                 if (streamResponse.Content.Headers.ContentType != null)
@@ -179,13 +195,33 @@ public class JfresolveApiController : ControllerBase
                     Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
                 }
                 
+                // Copy Content-Range header if present (for 206 Partial Content responses)
+                if (streamResponse.Headers.Contains("Content-Range"))
+                {
+                    var contentRangeValues = streamResponse.Headers.GetValues("Content-Range");
+                    Response.Headers["Content-Range"] = string.Join(", ", contentRangeValues);
+                }
+                
+                // Copy Accept-Ranges header to indicate we support range requests
+                Response.Headers["Accept-Ranges"] = "bytes";
+                
                 if (streamResponse.Content.Headers.ContentLength.HasValue)
                 {
                     Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
                 }
 
-                // Copy the stream to the response
-                await streamResponse.Content.CopyToAsync(Response.Body);
+                // Copy the stream to the response (unbuffered for better streaming performance)
+                // Use a buffer to avoid blocking, but keep it small for low latency
+                var buffer = new byte[81920]; // 80KB buffer
+                using (var stream = await streamResponse.Content.ReadAsStreamAsync())
+                {
+                    int bytesRead;
+                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    {
+                        await Response.Body.WriteAsync(buffer, 0, bytesRead);
+                        await Response.Body.FlushAsync(); // Flush to ensure data is sent immediately
+                    }
+                }
                 return new EmptyResult();
             }
             catch (HttpRequestException ex)

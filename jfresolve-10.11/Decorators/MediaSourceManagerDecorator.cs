@@ -152,6 +152,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 qualitySource.Timestamp = video.Timestamp;
             }
 
+            // Apply trick to ensure proper protocol and remote settings
+            ApplyTrick(qualitySource);
+
             sources.Add(qualitySource);
         }
 
@@ -284,6 +287,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 qualitySource.Video3DFormat = video.Video3DFormat;
                 qualitySource.Timestamp = video.Timestamp;
             }
+
+            // Apply trick to ensure proper protocol and remote settings
+            ApplyTrick(qualitySource);
 
             sources.Add(qualitySource);
         }
