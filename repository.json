@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.10",
+        "changelog": "Fixed Jellyfin 10.11.6 compatibility: Improved ReattachUserDataAsync implementation using reflection with proper BindingFlags to ensure interface contract is satisfied at runtime.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.10/jfresolve.zip",
+        "checksum": "37e2a88237cbf33219a7bb4d9f17e248",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-01-29T13:00:00Z"
+      },
+      {
         "version": "1.0.0.9",
         "changelog": "Fixed Jellyfin 10.11.6 compatibility issue: Added missing ReattachUserDataAsync method implementation to ItemRepositoryDecorator using reflection for interface compatibility.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.9/jfresolve.zip",
