@@ -172,6 +172,11 @@ public class JfresolveApiController : ControllerBase
             {
                 _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
                 
+                // Disable response buffering for optimal streaming performance
+                Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+                Response.Headers["Pragma"] = "no-cache";
+                Response.Headers["Expires"] = "0";
+                
                 var streamHttpClient = _httpClientFactory.CreateClient();
                 streamHttpClient.Timeout = TimeSpan.FromMinutes(10); // Longer timeout for streaming
                 
@@ -223,17 +228,32 @@ public class JfresolveApiController : ControllerBase
                     Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
                 }
 
-                // Copy the stream to the response (unbuffered for better streaming performance)
-                // Use a buffer to avoid blocking, but keep it small for low latency
-                var buffer = new byte[81920]; // 80KB buffer
+                // Optimized streaming: Use larger buffer and flush less frequently for better throughput
+                // Larger buffer reduces overhead from frequent system calls
+                // Periodic flushing (every N buffers) reduces flush overhead while maintaining responsiveness
+                const int bufferSize = 262144; // 256KB buffer for better throughput
+                const int flushInterval = 4; // Flush every 4 buffers (1MB chunks) to balance latency and throughput
+                var buffer = new byte[bufferSize];
+                int bufferCount = 0;
+                
                 using (var stream = await streamResponse.Content.ReadAsStreamAsync())
                 {
                     int bytesRead;
                     while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                     {
                         await Response.Body.WriteAsync(buffer, 0, bytesRead);
-                        await Response.Body.FlushAsync(); // Flush to ensure data is sent immediately
+                        bufferCount++;
+                        
+                        // Flush periodically to reduce overhead while maintaining low latency
+                        // Flush immediately on first buffer for quick start, then every N buffers
+                        if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                        {
+                            await Response.Body.FlushAsync();
+                        }
                     }
+                    
+                    // Final flush to ensure all data is sent
+                    await Response.Body.FlushAsync();
                 }
                 return new EmptyResult();
             }

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.14",
+        "changelog": "Optimized proxy streaming performance: Increased buffer size from 80KB to 256KB and reduced flush frequency to improve throughput and reduce buffering during playback. Flush now occurs every 4 buffers (1MB chunks) instead of every buffer, significantly reducing overhead while maintaining low latency.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.14/jfresolve.zip",
+        "checksum": "9a72d1034663b751309b8236d210103d",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T10:57:04Z"
+      },
+      {
         "version": "1.0.0.13",
         "changelog": "Fixed plugin image not loading: Added embedded resource for jfresolve.png and created Image endpoint to serve it. Added route handling for both /Plugins/Jfresolve/Image and /Plugins/{guid}/{version}/Image patterns.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.13/jfresolve.zip",
