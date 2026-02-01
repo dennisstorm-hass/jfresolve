@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.17",
+        "changelog": "Fixed Content-Length mismatch error: Only set Content-Length header for 206 Partial Content responses (range requests) where the range size is known. For full requests (200 OK), don't set Content-Length to allow graceful handling of connection resets without mismatch errors. This fixes 'Response Content-Length mismatch: too few bytes written' errors when clients pause or disconnect during streaming. Also includes code refactoring: extracted stream quality selection to separate service and refactored large methods (ResolveStream, InsertMeta) into smaller, more maintainable functions.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.17/jfresolve.zip",
+        "checksum": "26394a928ccdbb866c8896450800b731",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T12:37:23Z"
+      },
+      {
         "version": "1.0.0.16",
         "changelog": "Fixed HTTP 302 redirect handling: Added proper redirect following for stream URLs that return 302 responses (common with Real-Debrid and similar services). The plugin now follows up to 5 redirects while preserving Range headers and validating redirect URLs for security. This fixes streaming errors when addon URLs redirect to the actual stream location.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.16/jfresolve.zip",

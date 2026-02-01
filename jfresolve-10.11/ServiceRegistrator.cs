@@ -29,6 +29,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<TmdbService>();
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
+        services.AddSingleton<Services.StreamQualitySelector>();
         services.AddSingleton<SearchActionFilter>();
         services.AddSingleton<InsertActionFilter>();
         services.AddSingleton<ImageResourceFilter>();

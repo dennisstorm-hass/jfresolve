@@ -724,151 +724,217 @@ public async Task<(BaseItem? Item, bool Created)> InsertMeta(
 
     foreach (var task in tasks)
     {
-        // Determine type and create BaseItem
-        BaseItem baseItem;
-        BaseItemKind kind;
-
-        if (metadata is TmdbMovie tmdbMovie)
+        // Create BaseItem from metadata
+        var (baseItem, kind) = CreateBaseItemFromMetadata(metadata, task, tasks, firstItem);
+        if (baseItem == null || kind == null)
         {
-            // First item gets NO quality tag (clean title), others get quality tags
-            var quality = firstItem == null ? "" : task.Quality;
-            var index = firstItem == null ? 0 : task.Index;
-
-            baseItem = IntoBaseItem(tmdbMovie, quality, index);
-            kind = BaseItemKind.Movie;
-        }
-        else if (metadata is TmdbTvShow tmdbShow)
-        {
-            // For series, we only create ONE series item (no quality versioning for TV shows)
-            // Jellyfin doesn't handle multiple series or episode versions properly
-            // We only process the first task for the series item itself
-            if (task != tasks[0]) continue;
-
-            baseItem = IntoBaseItem(tmdbShow); // Primary series item
-            kind = BaseItemKind.Series;
-        }
-        else
-        {
-            _log.LogWarning("Jfresolve: Unknown metadata type, skipping");
-            return (null, false);
+            continue;
         }
 
-        if (baseItem?.ProviderIds is not { Count: > 0 })
+        if (baseItem.ProviderIds is not { Count: > 0 })
         {
             _log.LogWarning("Jfresolve: Missing provider ids, skipping");
             continue;
         }
 
         // Mark all items after the first as virtual (Gelato pattern)
-        // This hides them from library listings but makes them available as versions
         if (firstItem != null)
         {
             baseItem.IsVirtualItem = true;
         }
 
-        // Prevent duplicate inserts
-        await _insertLock.WaitAsync(ct);
-        try
+        // Insert item with lock protection
+        var (insertedItem, wasCreated) = await InsertItemWithLockAsync(
+            baseItem, kind.Value, parent, metadata, ct);
+        
+        if (insertedItem == null)
         {
-            var existing = GetByProviderIds(baseItem.ProviderIds, kind);
-            if (existing is not null)
-            {
-                _log.LogDebug(
-                    "Jfresolve: found existing {Kind}: {Id} for {Name}",
-                    existing.GetBaseItemKind(),
-                    existing.Id,
-                    baseItem.Name
-                );
-                if (firstItem == null) firstItem = existing;
-                continue;
-            }
-
-            // Insert into container
-            parent.AddChild(baseItem);
-            _log.LogDebug("Jfresolve: Inserted {Kind} '{Name}' with ID {Id}",
-                kind, baseItem.Name, baseItem.Id);
-            anyCreated = true;
             if (firstItem == null) firstItem = baseItem;
-
-            // Create seasons/episodes before releasing lock
-            if (kind == BaseItemKind.Series && metadata is TmdbTvShow tmdbShow2)
-            {
-                await CreateSeasonsAndEpisodesForSeries((Series)baseItem, tmdbShow2, ct);
-            }
-        }
-        finally
-        {
-            _insertLock.Release();
+            continue;
         }
 
-        // Save images only for the first version created (artwork is identical)
-        if (anyCreated && task == tasks[0])
-        {
-            try
-            {
-                if (metadata is TmdbMovie movieMeta)
-                {
-                    await SaveImagesForItem(baseItem, movieMeta, ct);
-                }
-                else if (metadata is TmdbTvShow showMeta)
-                {
-                    await SaveImagesForItem(baseItem, showMeta, ct);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.LogError(ex, "Jfresolve: Failed to save images for '{Name}'", baseItem.Name);
-            }
-        }
+        if (firstItem == null) firstItem = insertedItem;
+        if (wasCreated) anyCreated = true;
 
-        // Update repository
-        if (queueRefreshItem)
+        // Process item after insertion (images, repository updates)
+        if (wasCreated)
         {
-            try
-            {
-                // Basic update without full refresh for secondary items
-                await baseItem.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, ct);
-
-                // Only trigger full refresh for the first item to ensure immediate UI visibility
-                if (task == tasks[0])
-                {
-                    var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
-                    {
-                        MetadataRefreshMode = MetadataRefreshMode.None,
-                        ImageRefreshMode = MetadataRefreshMode.None,
-                        ReplaceAllImages = false,
-                        ReplaceAllMetadata = false,
-                        ForceSave = true
-                    };
-                    await _provider.RefreshFullItem(baseItem, options, ct);
-                }
-            }
-            catch (Exception ex)
-            {
-                _log.LogWarning(ex, "Jfresolve: Failed to update item '{Name}'", baseItem.Name);
-            }
+            await ProcessItemAfterInsertAsync(
+                insertedItem, metadata, task, tasks, queueRefreshItem, ct);
         }
     }
 
+    // Update parent folder if items were created
     if (queueRefreshItem && anyCreated && firstItem != null)
     {
-        try
-        {
-            var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
-            {
-                MetadataRefreshMode = MetadataRefreshMode.None,
-                ImageRefreshMode = MetadataRefreshMode.None,
-                ForceSave = true
-            };
-            await parent.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
-            await _provider.RefreshFullItem(parent, options, ct);
-        }
-        catch { }
+        await UpdateParentFolderAsync(parent, ct);
     }
 
     return (firstItem, anyCreated);
 }
 
+/// <summary>
+/// Creates a BaseItem from metadata based on type and versioning task
+/// </summary>
+private (BaseItem? Item, BaseItemKind? Kind) CreateBaseItemFromMetadata(
+    object metadata,
+    (string Quality, int Index) task,
+    List<(string Quality, int Index)> tasks,
+    BaseItem? firstItem)
+{
+    if (metadata is TmdbMovie tmdbMovie)
+    {
+        // First item gets NO quality tag (clean title), others get quality tags
+        var quality = firstItem == null ? "" : task.Quality;
+        var index = firstItem == null ? 0 : task.Index;
+        var baseItem = IntoBaseItem(tmdbMovie, quality, index);
+        return (baseItem, BaseItemKind.Movie);
+    }
+    else if (metadata is TmdbTvShow tmdbShow)
+    {
+        // For series, we only create ONE series item (no quality versioning for TV shows)
+        // Jellyfin doesn't handle multiple series or episode versions properly
+        // We only process the first task for the series item itself
+        if (task != tasks[0])
+        {
+            return (null, null);
+        }
+        var baseItem = IntoBaseItem(tmdbShow); // Primary series item
+        return (baseItem, BaseItemKind.Series);
+    }
+    else
+    {
+        _log.LogWarning("Jfresolve: Unknown metadata type, skipping");
+        return (null, null);
+    }
+}
+
+/// <summary>
+/// Inserts an item into the library with lock protection against duplicates
+/// </summary>
+private async Task<(BaseItem? Item, bool Created)> InsertItemWithLockAsync(
+    BaseItem baseItem,
+    BaseItemKind kind,
+    Folder parent,
+    object metadata,
+    CancellationToken ct)
+{
+    // Prevent duplicate inserts
+    await _insertLock.WaitAsync(ct);
+    try
+    {
+        var existing = GetByProviderIds(baseItem.ProviderIds, kind);
+        if (existing is not null)
+        {
+            _log.LogDebug(
+                "Jfresolve: found existing {Kind}: {Id} for {Name}",
+                existing.GetBaseItemKind(),
+                existing.Id,
+                baseItem.Name
+            );
+            return (existing, false);
+        }
+
+        // Insert into container
+        parent.AddChild(baseItem);
+        _log.LogDebug("Jfresolve: Inserted {Kind} '{Name}' with ID {Id}",
+            kind, baseItem.Name, baseItem.Id);
+
+        // Create seasons/episodes before releasing lock
+        if (kind == BaseItemKind.Series && metadata is TmdbTvShow tmdbShow)
+        {
+            await CreateSeasonsAndEpisodesForSeries((Series)baseItem, tmdbShow, ct);
+        }
+
+        return (baseItem, true);
+    }
+    finally
+    {
+        _insertLock.Release();
+    }
+}
+
+/// <summary>
+/// Processes item after insertion: saves images and updates repository
+/// </summary>
+private async Task ProcessItemAfterInsertAsync(
+    BaseItem baseItem,
+    object metadata,
+    (string Quality, int Index) task,
+    List<(string Quality, int Index)> tasks,
+    bool queueRefreshItem,
+    CancellationToken ct)
+{
+    // Save images only for the first version created (artwork is identical)
+    if (task == tasks[0])
+    {
+        try
+        {
+            if (metadata is TmdbMovie movieMeta)
+            {
+                await SaveImagesForItem(baseItem, movieMeta, ct);
+            }
+            else if (metadata is TmdbTvShow showMeta)
+            {
+                await SaveImagesForItem(baseItem, showMeta, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogError(ex, "Jfresolve: Failed to save images for '{Name}'", baseItem.Name);
+        }
+    }
+
+    // Update repository
+    if (queueRefreshItem)
+    {
+        try
+        {
+            // Basic update without full refresh for secondary items
+            await baseItem.UpdateToRepositoryAsync(ItemUpdateType.MetadataImport, ct);
+
+            // Only trigger full refresh for the first item to ensure immediate UI visibility
+            if (task == tasks[0])
+            {
+                var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
+                {
+                    MetadataRefreshMode = MetadataRefreshMode.None,
+                    ImageRefreshMode = MetadataRefreshMode.None,
+                    ReplaceAllImages = false,
+                    ReplaceAllMetadata = false,
+                    ForceSave = true
+                };
+                await _provider.RefreshFullItem(baseItem, options, ct);
+            }
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Jfresolve: Failed to update item '{Name}'", baseItem.Name);
+        }
+    }
+}
+
+/// <summary>
+/// Updates the parent folder after items are inserted
+/// </summary>
+private async Task UpdateParentFolderAsync(Folder parent, CancellationToken ct)
+{
+    try
+    {
+        var options = new MetadataRefreshOptions(new DirectoryService(_fileSystem))
+        {
+            MetadataRefreshMode = MetadataRefreshMode.None,
+            ImageRefreshMode = MetadataRefreshMode.None,
+            ForceSave = true
+        };
+        await parent.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, ct);
+        await _provider.RefreshFullItem(parent, options, ct);
+    }
+    catch (Exception ex)
+    {
+        _log.LogWarning(ex, "Jfresolve: Failed to update parent folder '{Name}'", parent.Name);
+    }
+}
 
 
 /// <summary>

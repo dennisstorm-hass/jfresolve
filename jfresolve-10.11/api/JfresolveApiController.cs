@@ -8,6 +8,7 @@ using System.Net.Sockets;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
+using Jfresolve.Services;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
@@ -25,6 +26,7 @@ public class JfresolveApiController : ControllerBase
 {
     private readonly ILogger<JfresolveApiController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
+    private readonly StreamQualitySelector _qualitySelector;
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -32,10 +34,12 @@ public class JfresolveApiController : ControllerBase
 
     public JfresolveApiController(
         ILogger<JfresolveApiController> logger,
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        StreamQualitySelector qualitySelector)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
+        _qualitySelector = qualitySelector;
     }
 
     /// <summary>
@@ -122,266 +126,58 @@ public class JfresolveApiController : ControllerBase
 
         try
         {
-            // Normalize the manifest URL (remove stremio://, convert to https://)
-            var manifestBase = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
-
-            // Build the stream endpoint URL
-            string streamUrl;
-            if (type.Equals("movie", StringComparison.OrdinalIgnoreCase))
-            {
-                streamUrl = $"{manifestBase}/stream/movie/{id}.json";
-            }
-            else if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
+            // Validate series parameters
+            if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
             {
                 if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
                 {
                     return BadRequest("Season and episode parameters are required for series type");
                 }
-                streamUrl = $"{manifestBase}/stream/series/{id}:{season}:{episode}.json";
-            }
-            else
-            {
-                streamUrl = $"{manifestBase}/stream/{type}/{id}.json";
             }
 
-            _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
-
-            // Call the Stremio addon to get the stream
-            var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
-            addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
-            addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
-            var response = await addonHttpClient.GetStringAsync(streamUrl);
-
-            // Parse the JSON response
-            using var json = JsonDocument.Parse(response);
-            if (!json.RootElement.TryGetProperty("streams", out var streams) || streams.GetArrayLength() == 0)
+            // Get streams from addon
+            var streams = await GetStreamsFromAddonAsync(type, id, season, episode, config);
+            if (streams == null || streams.Value.GetArrayLength() == 0)
             {
                 _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
                 return NotFound($"No streams found for {id}");
             }
 
-            // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
-            var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
-            int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
-
-            // Select the stream using failover-adjusted index
-            var selectedStream = SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex);
-            if (selectedStream == null)
+            // Select stream using quality selector and failover logic
+            var redirectUrl = await SelectAndResolveStreamUrlAsync(type, id, season, episode, quality, index, streams.Value, config);
+            if (string.IsNullOrWhiteSpace(redirectUrl))
             {
-                _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
                 return NotFound("No suitable stream found");
             }
 
-            if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
-            {
-                _logger.LogWarning("Jfresolve: No URL property in stream response");
-                return NotFound("No stream URL available in response");
-            }
-
-            var redirectUrl = urlProperty.GetString();
-            if (string.IsNullOrWhiteSpace(redirectUrl))
-            {
-                _logger.LogWarning("Jfresolve: Empty stream URL received");
-                return NotFound("Empty stream URL received");
-            }
-
-            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
-
-            // Validate URL to prevent SSRF attacks
-            if (!IsValidStreamUrl(redirectUrl))
-            {
-                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
-                return BadRequest("Invalid or unsafe stream URL");
-            }
-
-            // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
-            // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
-            // By proxying, FFmpeg gets the stream directly without needing to follow redirects
-            // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
-            try
-            {
-                _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
-                
-                // Disable response buffering for optimal streaming performance
-                Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
-                Response.Headers["Pragma"] = Constants.PragmaNoCache;
-                Response.Headers["Expires"] = Constants.ExpiresZero;
-                
-                var streamHttpClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
-                streamHttpClient.Timeout = TimeSpan.FromMinutes(Constants.StreamRequestTimeoutMinutes);
-                
-                // Handle HTTP Range requests for seeking (required by FFmpeg)
-                var rangeHeader = Request.Headers["Range"].ToString();
-                HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
-                
-                if (!string.IsNullOrEmpty(rangeHeader))
-                {
-                    _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
-                    requestMessage.Headers.Add("Range", rangeHeader);
-                }
-                
-                // Stream the content directly to the response
-                // HttpResponseMessage must be disposed to prevent resource leaks
-                var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
-                
-                // Handle redirects (302, 301, etc.) - follow up to 5 redirects
-                // FollowRedirectsAsync will dispose initialResponse if redirects are followed
-                var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5);
-                if (streamResponse == null)
-                {
-                    initialResponse.Dispose(); // Dispose if redirects failed
-                    _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
-                    return StatusCode(502, "Failed to resolve stream URL after redirects");
-                }
-                
-                // Use the final response (after following redirects)
-                using var finalStreamResponse = streamResponse;
-                finalStreamResponse.EnsureSuccessStatusCode();
-
-                // Copy status code (206 for partial content if range was requested)
-                Response.StatusCode = (int)finalStreamResponse.StatusCode;
-
-                // Copy headers that might be important for streaming
-                if (finalStreamResponse.Content.Headers.ContentType != null)
-                {
-                    Response.ContentType = finalStreamResponse.Content.Headers.ContentType.ToString();
-                }
-                
-                // Copy Content-Range header if present (for 206 Partial Content responses)
-                // Content-Range can be in response headers or content headers depending on the server
-                string? contentRangeValue = null;
-                if (finalStreamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
-                {
-                    contentRangeValue = responseContentRange.FirstOrDefault();
-                }
-                else if (finalStreamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
-                {
-                    contentRangeValue = contentContentRange.FirstOrDefault();
-                }
-                
-                if (!string.IsNullOrEmpty(contentRangeValue))
-                {
-                    Response.Headers["Content-Range"] = contentRangeValue;
-                }
-                
-                // Copy Accept-Ranges header to indicate we support range requests
-                Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
-                
-                if (finalStreamResponse.Content.Headers.ContentLength.HasValue)
-                {
-                    Response.ContentLength = finalStreamResponse.Content.Headers.ContentLength.Value;
-                }
-
-                // Optimized streaming: Use larger buffer and flush less frequently for better throughput
-                // Larger buffer reduces overhead from frequent system calls
-                // Periodic flushing (every N buffers) reduces flush overhead while maintaining responsiveness
-                const int bufferSize = Constants.StreamBufferSize;
-                const int flushInterval = Constants.StreamFlushInterval;
-                var buffer = new byte[bufferSize];
-                int bufferCount = 0;
-                
-                // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
-                // The stream must be fully read before HttpResponseMessage disposal completes
-                using (var stream = await finalStreamResponse.Content.ReadAsStreamAsync())
-                {
-                    try
-                    {
-                        int bytesRead;
-                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
-                        {
-                            await Response.Body.WriteAsync(buffer, 0, bytesRead);
-                            bufferCount++;
-                            
-                            // Flush periodically to reduce overhead while maintaining low latency
-                            // Flush immediately on first buffer for quick start, then every N buffers
-                            if (bufferCount == 1 || bufferCount % flushInterval == 0)
-                            {
-                                await Response.Body.FlushAsync();
-                            }
-                        }
-                        
-                        // Final flush to ensure all data is sent
-                        await Response.Body.FlushAsync();
-                    }
-                    catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
-                                                     (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
-                                                      socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
-                    {
-                        // Connection reset during streaming - this is normal when client pauses/disconnects
-                        // Don't try to send error response as response has already started
-                        // Just log and let the connection close naturally
-                        _logger.LogInformation(
-                            "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
-                            type, id, bufferCount * bufferSize);
-                        
-                        // Check if response has started before trying to flush
-                        if (!Response.HasStarted)
-                        {
-                            await Response.Body.FlushAsync();
-                        }
-                        // Return empty result - connection will close naturally
-                        return new EmptyResult();
-                    }
-                    catch (System.Net.Sockets.SocketException socketEx) when 
-                        (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
-                         socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown)
-                    {
-                        // Connection reset during streaming
-                        _logger.LogInformation(
-                            "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
-                            type, id, bufferCount * bufferSize);
-                        
-                        if (!Response.HasStarted)
-                        {
-                            await Response.Body.FlushAsync();
-                        }
-                        return new EmptyResult();
-                    }
-                }
-                // HttpResponseMessage will be disposed here automatically via using statement
-                return new EmptyResult();
-            }
-            catch (HttpRequestException ex)
-            {
-                // Only return error if response hasn't started yet
-                if (!Response.HasStarted)
-                {
-                    _logger.LogError(ex, "Jfresolve: Error proxying stream from {RedirectUrl}", redirectUrl);
-                    return StatusCode(502, $"Error proxying stream: {ex.Message}");
-                }
-                else
-                {
-                    // Response already started - log and let connection close
-                    _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {RedirectUrl}", redirectUrl);
-                    return new EmptyResult();
-                }
-            }
-            catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
-                                             (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
-                                              socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
-            {
-                // Connection reset before or during streaming
-                if (!Response.HasStarted)
-                {
-                    _logger.LogWarning(ioEx, "Jfresolve: Connection reset before streaming started for {RedirectUrl}", redirectUrl);
-                    return StatusCode(502, "Connection reset by peer");
-                }
-                else
-                {
-                    _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {RedirectUrl} (normal client disconnect)", redirectUrl);
-                    return new EmptyResult();
-                }
-            }
+            // Proxy the stream
+            return await ProxyStreamAsync(redirectUrl, type, id);
         }
         catch (HttpRequestException ex)
         {
-            _logger.LogError(ex, "Jfresolve: HTTP error resolving stream for {Type}/{Id}", type, id);
-            return StatusCode(500, $"Error contacting addon: {ex.Message}");
+            if (!Response.HasStarted)
+            {
+                _logger.LogError(ex, "Jfresolve: HTTP error resolving stream for {Type}/{Id}", type, id);
+                return StatusCode(500, $"Error contacting addon: {ex.Message}");
+            }
+            else
+            {
+                _logger.LogWarning(ex, "Jfresolve: HTTP error during streaming for {Type}/{Id}", type, id);
+                return new EmptyResult();
+            }
         }
         catch (JsonException ex)
         {
-            _logger.LogError(ex, "Jfresolve: JSON parse error for {Type}/{Id}", type, id);
-            return StatusCode(500, $"Invalid response from addon: {ex.Message}");
+            if (!Response.HasStarted)
+            {
+                _logger.LogError(ex, "Jfresolve: JSON parse error for {Type}/{Id}", type, id);
+                return StatusCode(500, $"Invalid response from addon: {ex.Message}");
+            }
+            else
+            {
+                _logger.LogWarning(ex, "Jfresolve: JSON parse error during streaming for {Type}/{Id}", type, id);
+                return new EmptyResult();
+            }
         }
         catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
                                          (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
@@ -412,6 +208,324 @@ public class JfresolveApiController : ControllerBase
                 // Response already started - log and let connection close
                 _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {Type}/{Id}", type, id);
                 return new EmptyResult();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Gets streams from the Stremio addon
+    /// </summary>
+    private async Task<JsonElement?> GetStreamsFromAddonAsync(
+        string type,
+        string id,
+        string? season,
+        string? episode,
+        Configuration.PluginConfiguration config)
+    {
+        // Normalize the manifest URL (remove stremio://, convert to https://)
+        var manifestBase = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
+
+        // Build the stream endpoint URL
+        string streamUrl = BuildStreamUrl(manifestBase, type, id, season, episode);
+        if (string.IsNullOrWhiteSpace(streamUrl))
+        {
+            return null;
+        }
+
+        _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
+
+        // Call the Stremio addon to get the stream
+        var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
+        addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
+        addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
+        var response = await addonHttpClient.GetStringAsync(streamUrl);
+
+        // Parse the JSON response
+        using var json = JsonDocument.Parse(response);
+        if (json.RootElement.TryGetProperty("streams", out var streams) && streams.GetArrayLength() > 0)
+        {
+            return streams;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// Builds the stream URL for the addon based on content type
+    /// </summary>
+    private string BuildStreamUrl(string manifestBase, string type, string id, string? season, string? episode)
+    {
+        if (type.Equals("movie", StringComparison.OrdinalIgnoreCase))
+        {
+            return $"{manifestBase}/stream/movie/{id}.json";
+        }
+        else if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
+            {
+                return string.Empty; // Will be caught by caller
+            }
+            return $"{manifestBase}/stream/series/{id}:{season}:{episode}.json";
+        }
+        else
+        {
+            return $"{manifestBase}/stream/{type}/{id}.json";
+        }
+    }
+
+    /// <summary>
+    /// Selects a stream and resolves its URL using quality selector and failover logic
+    /// </summary>
+    private async Task<string?> SelectAndResolveStreamUrlAsync(
+        string type,
+        string id,
+        string? season,
+        string? episode,
+        string? quality,
+        int? index,
+        JsonElement streams,
+        Configuration.PluginConfiguration config)
+    {
+        // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
+        var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
+        int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
+
+        // Select the stream using failover-adjusted index
+        var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex);
+        if (selectedStream == null)
+        {
+            _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
+            return null;
+        }
+
+        if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
+        {
+            _logger.LogWarning("Jfresolve: No URL property in stream response");
+            return null;
+        }
+
+        var redirectUrl = urlProperty.GetString();
+        if (string.IsNullOrWhiteSpace(redirectUrl))
+        {
+            _logger.LogWarning("Jfresolve: Empty stream URL received");
+            return null;
+        }
+
+        _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
+
+        // Validate URL to prevent SSRF attacks
+        if (!IsValidStreamUrl(redirectUrl))
+        {
+            _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
+            return null;
+        }
+
+        return redirectUrl;
+    }
+
+    /// <summary>
+    /// Proxies the stream from the redirect URL to the client
+    /// </summary>
+    private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id)
+    {
+        // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
+        // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
+        // By proxying, FFmpeg gets the stream directly without needing to follow redirects
+        // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
+        try
+        {
+            _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
+            
+            // Disable response buffering for optimal streaming performance
+            Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
+            Response.Headers["Pragma"] = Constants.PragmaNoCache;
+            Response.Headers["Expires"] = Constants.ExpiresZero;
+            
+            var streamHttpClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
+            streamHttpClient.Timeout = TimeSpan.FromMinutes(Constants.StreamRequestTimeoutMinutes);
+            
+            // Handle HTTP Range requests for seeking (required by FFmpeg)
+            var rangeHeader = Request.Headers["Range"].ToString();
+            HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
+            
+            if (!string.IsNullOrEmpty(rangeHeader))
+            {
+                _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
+                requestMessage.Headers.Add("Range", rangeHeader);
+            }
+            
+            // Stream the content directly to the response
+            // HttpResponseMessage must be disposed to prevent resource leaks
+            var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+            
+            // Handle redirects (302, 301, etc.) - follow up to 5 redirects
+            // FollowRedirectsAsync will dispose initialResponse if redirects are followed
+            var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5);
+            if (streamResponse == null)
+            {
+                initialResponse.Dispose(); // Dispose if redirects failed
+                _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
+                return StatusCode(502, "Failed to resolve stream URL after redirects");
+            }
+            
+            // Use the final response (after following redirects)
+            using var finalStreamResponse = streamResponse;
+            finalStreamResponse.EnsureSuccessStatusCode();
+
+            // Copy response headers
+            CopyStreamResponseHeaders(finalStreamResponse);
+
+            // Stream the content
+            await StreamContentAsync(finalStreamResponse, type, id);
+            
+            return new EmptyResult();
+        }
+        catch (HttpRequestException ex)
+        {
+            // Only return error if response hasn't started yet
+            if (!Response.HasStarted)
+            {
+                _logger.LogError(ex, "Jfresolve: Error proxying stream from {RedirectUrl}", redirectUrl);
+                return StatusCode(502, $"Error proxying stream: {ex.Message}");
+            }
+            else
+            {
+                // Response already started - log and let connection close
+                _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {RedirectUrl}", redirectUrl);
+                return new EmptyResult();
+            }
+        }
+        catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
+                                         (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                                          socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
+        {
+            // Connection reset before or during streaming
+            if (!Response.HasStarted)
+            {
+                _logger.LogWarning(ioEx, "Jfresolve: Connection reset before streaming started for {RedirectUrl}", redirectUrl);
+                return StatusCode(502, "Connection reset by peer");
+            }
+            else
+            {
+                _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {RedirectUrl} (normal client disconnect)", redirectUrl);
+                return new EmptyResult();
+            }
+        }
+    }
+
+    /// <summary>
+    /// Copies response headers from the stream response to the client response
+    /// </summary>
+    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse)
+    {
+        // Copy status code (206 for partial content if range was requested)
+        Response.StatusCode = (int)streamResponse.StatusCode;
+
+        // Copy headers that might be important for streaming
+        if (streamResponse.Content.Headers.ContentType != null)
+        {
+            Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
+        }
+        
+        // Copy Content-Range header if present (for 206 Partial Content responses)
+        // Content-Range can be in response headers or content headers depending on the server
+        string? contentRangeValue = null;
+        if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
+        {
+            contentRangeValue = responseContentRange.FirstOrDefault();
+        }
+        else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
+        {
+            contentRangeValue = contentContentRange.FirstOrDefault();
+        }
+        
+        if (!string.IsNullOrEmpty(contentRangeValue))
+        {
+            Response.Headers["Content-Range"] = contentRangeValue;
+        }
+        
+        // Copy Accept-Ranges header to indicate we support range requests
+        Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
+        
+        // Only set Content-Length for range requests (206 Partial Content) where we know the exact range size
+        // For full requests (200 OK), don't set Content-Length to avoid mismatch errors if connection resets
+        // This allows graceful handling of connection resets without "Content-Length mismatch" errors
+        if (streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
+            streamResponse.Content.Headers.ContentLength.HasValue)
+        {
+            // For 206 Partial Content, Content-Length represents the range size, which is safe to set
+            Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+        }
+        // For 200 OK or other statuses, don't set Content-Length - let it stream without fixed length
+        // This prevents "Content-Length mismatch" errors when connections are reset mid-stream
+    }
+
+    /// <summary>
+    /// Streams content from the HTTP response to the client response body
+    /// </summary>
+    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id)
+    {
+        // Optimized streaming: Use larger buffer and flush less frequently for better throughput
+        // Larger buffer reduces overhead from frequent system calls
+        // Periodic flushing (every N buffers) reduces flush overhead while maintaining responsiveness
+        const int bufferSize = Constants.StreamBufferSize;
+        const int flushInterval = Constants.StreamFlushInterval;
+        var buffer = new byte[bufferSize];
+        int bufferCount = 0;
+        
+        // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
+        // The stream must be fully read before HttpResponseMessage disposal completes
+        using (var stream = await streamResponse.Content.ReadAsStreamAsync())
+        {
+            try
+            {
+                int bytesRead;
+                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                {
+                    await Response.Body.WriteAsync(buffer, 0, bytesRead);
+                    bufferCount++;
+                    
+                    // Flush periodically to reduce overhead while maintaining low latency
+                    // Flush immediately on first buffer for quick start, then every N buffers
+                    if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                    {
+                        await Response.Body.FlushAsync();
+                    }
+                }
+                
+                // Final flush to ensure all data is sent
+                await Response.Body.FlushAsync();
+            }
+            catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
+                                             (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                                              socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
+            {
+                // Connection reset during streaming - this is normal when client pauses/disconnects
+                // Don't try to send error response as response has already started
+                // Just log and let the connection close naturally
+                _logger.LogInformation(
+                    "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
+                    type, id, bufferCount * bufferSize);
+                
+                // Check if response has started before trying to flush
+                if (!Response.HasStarted)
+                {
+                    await Response.Body.FlushAsync();
+                }
+            }
+            catch (System.Net.Sockets.SocketException socketEx) when 
+                (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                 socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown)
+            {
+                // Connection reset during streaming
+                _logger.LogInformation(
+                    "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
+                    type, id, bufferCount * bufferSize);
+                
+                if (!Response.HasStarted)
+                {
+                    await Response.Body.FlushAsync();
+                }
             }
         }
     }
@@ -487,159 +601,6 @@ public class JfresolveApiController : ControllerBase
         });
     }
 
-    /// <summary>
-    /// Selects the best stream from the available streams based on preferred quality
-    /// </summary>
-    private JsonElement? SelectStreamByQuality(JsonElement streams, string preferredQuality, string? requestedQuality = null, int? requestedIndex = null)
-    {
-        var streamArray = streams.EnumerateArray().ToList();
-        if (streamArray.Count == 0)
-            return null;
-
-        // If a specific quality is requested (Virtual Versioning), filter and pick by index
-        if (!string.IsNullOrEmpty(requestedQuality))
-        {
-            var filteredStreams = FilterStreamsByQuality(streamArray, requestedQuality);
-            if (filteredStreams.Count > 0)
-            {
-                var idx = requestedIndex ?? 0;
-                // Fallback to last available if index is too high
-                if (idx >= filteredStreams.Count)
-                {
-                    _logger.LogWarning("Jfresolve: Requested index {Index} out of range for quality {Quality}. Falling back to index {FallbackIndex}.",
-                        idx, requestedQuality, filteredStreams.Count - 1);
-                    idx = filteredStreams.Count - 1;
-                }
-                _logger.LogInformation("Jfresolve: Selected quality {Quality} stream at index {Index}", requestedQuality, idx);
-                return filteredStreams[idx];
-            }
-
-            _logger.LogWarning("Jfresolve: Specifically requested quality {Quality} not found, falling back to discovery logic", requestedQuality);
-        }
-
-        // Discovery logic (Discovery mode or fallback)
-        if (preferredQuality.Equals("Auto", StringComparison.OrdinalIgnoreCase))
-        {
-            return SelectHighestQualityStream(streamArray);
-        }
-
-        // Try to find exact match for preferred quality
-        var matchedStream = FindStreamByQuality(streamArray, preferredQuality);
-        if (matchedStream != null)
-        {
-            _logger.LogInformation("Jfresolve: Selected {Quality} stream (discovery match)", preferredQuality);
-            return matchedStream;
-        }
-
-        // Fallback: select highest quality if preferred not found
-        _logger.LogInformation("Jfresolve: Preferred quality {Quality} not found, selecting highest available", preferredQuality);
-        return SelectHighestQualityStream(streamArray);
-    }
-
-    /// <summary>
-    /// Filters streams list to only those containing the specified quality indicators
-    /// </summary>
-    private System.Collections.Generic.List<JsonElement> FilterStreamsByQuality(System.Collections.Generic.List<JsonElement> streams, string quality)
-    {
-        var indicators = GetQualityIndicators(quality);
-        var results = new System.Collections.Generic.List<JsonElement>();
-
-        foreach (var stream in streams)
-        {
-            var text = GetStreamText(stream);
-            if (indicators.Any(ind => text.Contains(ind, StringComparison.OrdinalIgnoreCase)))
-            {
-                results.Add(stream);
-            }
-        }
-
-        return results;
-    }
-
-    /// <summary>
-    /// Finds a stream matching the specified quality preference
-    /// </summary>
-    private JsonElement? FindStreamByQuality(System.Collections.Generic.List<JsonElement> streams, string quality)
-    {
-        var qualityIndicators = GetQualityIndicators(quality);
-
-        foreach (var stream in streams)
-        {
-            var streamText = GetStreamText(stream);
-
-            // Check if any quality indicator is present in the stream text
-            foreach (var indicator in qualityIndicators)
-            {
-                if (streamText.Contains(indicator, StringComparison.OrdinalIgnoreCase))
-                {
-                    return stream;
-                }
-            }
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Selects the highest quality stream from the available streams
-    /// Priority order: 4K/2160p > 1440p > 1080p > 720p > 480p > first available
-    /// </summary>
-    private JsonElement SelectHighestQualityStream(System.Collections.Generic.List<JsonElement> streams)
-    {
-        // Try to find streams in order of quality preference
-        var qualityPriority = Constants.QualityPriority;
-
-        foreach (var quality in qualityPriority)
-        {
-            var stream = FindStreamByQuality(streams, quality);
-            if (stream != null)
-            {
-                _logger.LogInformation("Jfresolve: Auto-selected {Quality} stream (highest available)", quality);
-                return stream.Value;
-            }
-        }
-
-        // Fallback to first stream if no quality indicators found
-        _logger.LogInformation("Jfresolve: No quality indicators found, using first stream");
-        return streams[0];
-    }
-
-    /// <summary>
-    /// Gets quality indicators for a given quality preference
-    /// Maps user-friendly names to various formats used by different addons
-    /// </summary>
-    private string[] GetQualityIndicators(string quality)
-    {
-        return quality.ToLowerInvariant() switch
-        {
-            "4k" => new[] { "4k", "2160p", "2160" },
-            "1440p" => new[] { "1440p", "1440" },
-            "1080p" => new[] { "1080p", "1080" },
-            "720p" => new[] { "720p", "720" },
-            "480p" => new[] { "480p", "480" },
-            _ => new[] { quality.ToLowerInvariant() }
-        };
-    }
-
-    /// <summary>
-    /// Extracts searchable text from a stream object (name + title fields)
-    /// </summary>
-    private string GetStreamText(JsonElement stream)
-    {
-        var text = string.Empty;
-
-        if (stream.TryGetProperty("name", out var name))
-        {
-            text += name.GetString() + " ";
-        }
-
-        if (stream.TryGetProperty("title", out var title))
-        {
-            text += title.GetString();
-        }
-
-        return text;
-    }
 
     /// <summary>
     /// Builds a cache key for failover tracking
@@ -699,7 +660,7 @@ public class JfresolveApiController : ControllerBase
         // If quality is specified, count only matching streams
         if (!string.IsNullOrEmpty(quality))
         {
-            var filteredStreams = FilterStreamsByQuality(streamArray, quality);
+            var filteredStreams = _qualitySelector.FilterStreamsByQuality(streamArray, quality);
             totalStreams = filteredStreams.Count;
 
             if (totalStreams == 0)
