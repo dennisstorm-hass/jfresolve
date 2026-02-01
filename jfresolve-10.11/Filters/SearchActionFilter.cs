@@ -91,8 +91,9 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
         // Convert BaseItems to DTOs (similar to Gelato's ConvertMetasToDtos)
         var dtos = ConvertBaseItemsToDtos(baseItems);
 
-        // Apply pagination
-        var paged = dtos.Skip(start).Take(limit).ToArray();
+        // Apply pagination with ordering to avoid EF Core warnings
+        // Order by name for consistent pagination results
+        var paged = dtos.OrderBy(d => d.Name).Skip(start).Take(limit).ToArray();
 
         // Return search results
         ctx.Result = new OkObjectResult(

@@ -184,7 +184,7 @@ public class JfresolveManager
             return null;
         }
 
-        _log.LogWarning("Jfresolve: TryGetFolder looking for path: {Path}", path);
+        _log.LogDebug("Jfresolve: TryGetFolder looking for path: {Path}", path);
 
         // Seed the folder to ensure it exists and triggers library scans
         SeedFolder(path);
@@ -199,13 +199,13 @@ public class JfresolveManager
             };
 
             var allItems = _repo.GetItemList(query);
-            _log.LogWarning("Jfresolve: Query returned {Count} items for path '{Path}'", allItems.Count, path);
+            _log.LogDebug("Jfresolve: Query returned {Count} items for path '{Path}'", allItems.Count, path);
 
             if (allItems.Count > 0)
             {
                 foreach (var item in allItems)
                 {
-                    _log.LogWarning("Jfresolve: Found item - Type: {Type}, Name: {Name}, Path: {ItemPath}, IsFolder: {IsFolder}",
+                    _log.LogDebug("Jfresolve: Found item - Type: {Type}, Name: {Name}, Path: {ItemPath}, IsFolder: {IsFolder}",
                         item.GetType().Name, item.Name, item.Path, item is Folder);
                 }
             }

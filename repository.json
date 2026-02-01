@@ -9,6 +9,22 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.19",
+        "changelog": "Fixed ObjectDisposedException on pause/resume: Changed GetStreamsFromAddonAsync to return JsonDocument instead of JsonElement and properly manage its lifecycle. The streams array is now cloned into a new JsonDocument before disposing the original, ensuring the JsonElement remains valid when accessed after pausing and resuming playback. This fixes 'Cannot access a disposed object' errors when resuming playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.19/jfresolve.zip",
+        "checksum": "47a834a58a4f9bcb53fb772d0ee5d18d",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T12:56:45Z"
+      },
+      {
+        "version": "1.0.0.18",
+        "changelog": "Fixed warnings and improved logging: Resolved EF Core query warning by adding OrderBy before Skip/Take in search pagination. Changed debug/informational log messages from LogWarning to LogDebug level for folder lookup operations. This reduces log noise and ensures warnings only appear for actual issues.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.18/jfresolve.zip",
+        "checksum": "46637dfc3a4807cc54926efaf779ea4f",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T12:43:44Z"
+      },
+      {
         "version": "1.0.0.17",
         "changelog": "Fixed Content-Length mismatch error: Only set Content-Length header for 206 Partial Content responses (range requests) where the range size is known. For full requests (200 OK), don't set Content-Length to allow graceful handling of connection resets without mismatch errors. This fixes 'Response Content-Length mismatch: too few bytes written' errors when clients pause or disconnect during streaming. Also includes code refactoring: extracted stream quality selection to separate service and refactored large methods (ResolveStream, InsertMeta) into smaller, more maintainable functions.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.17/jfresolve.zip",

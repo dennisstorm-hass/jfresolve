@@ -135,16 +135,28 @@ public class JfresolveApiController : ControllerBase
                 }
             }
 
-            // Get streams from addon
-            var streams = await GetStreamsFromAddonAsync(type, id, season, episode, config);
-            if (streams == null || streams.Value.GetArrayLength() == 0)
+            // Get streams from addon (returns JsonDocument that must be kept alive)
+            JsonDocument? streamsDoc = null;
+            string? redirectUrl = null;
+            try
             {
-                _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
-                return NotFound($"No streams found for {id}");
-            }
+                streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
+                if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
+                {
+                    _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
+                    return NotFound($"No streams found for {id}");
+                }
 
-            // Select stream using quality selector and failover logic
-            var redirectUrl = await SelectAndResolveStreamUrlAsync(type, id, season, episode, quality, index, streams.Value, config);
+                // Select stream using quality selector and failover logic
+                // Keep streamsDoc alive until we're done using the streams element
+                redirectUrl = await SelectAndResolveStreamUrlAsync(type, id, season, episode, quality, index, streamsDoc.RootElement, config);
+            }
+            finally
+            {
+                // Dispose the JsonDocument after we're done with it
+                streamsDoc?.Dispose();
+            }
+            
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
                 return NotFound("No suitable stream found");
@@ -214,8 +226,9 @@ public class JfresolveApiController : ControllerBase
 
     /// <summary>
     /// Gets streams from the Stremio addon
+    /// Returns JsonDocument that must be disposed by the caller
     /// </summary>
-    private async Task<JsonElement?> GetStreamsFromAddonAsync(
+    private async Task<JsonDocument?> GetStreamsFromAddonAsync(
         string type,
         string id,
         string? season,
@@ -241,12 +254,20 @@ public class JfresolveApiController : ControllerBase
         var response = await addonHttpClient.GetStringAsync(streamUrl);
 
         // Parse the JSON response
-        using var json = JsonDocument.Parse(response);
+        var json = JsonDocument.Parse(response);
+        
+        // Extract the streams array and create a new JsonDocument containing only the streams
+        // This allows us to dispose the original document while keeping the streams data alive
         if (json.RootElement.TryGetProperty("streams", out var streams) && streams.GetArrayLength() > 0)
         {
-            return streams;
+            // Clone the streams array into a new JsonDocument
+            // This creates an independent copy that can outlive the original document
+            var streamsJson = JsonSerializer.Serialize(streams);
+            json.Dispose(); // Dispose the original document
+            return JsonDocument.Parse(streamsJson);
         }
 
+        json.Dispose();
         return null;
     }
 
