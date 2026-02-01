@@ -1,5 +1,6 @@
 using System;
 using System.Linq;
+using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
 using Jfresolve.Decorators;
@@ -38,8 +39,26 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<PopulateLibraryTask>();
         services.AddSingleton<UpdateSeriesTask>();
 
-        // Register HttpClientFactory for TMDB API calls
+        // Register HttpClientFactory with named clients for different use cases
         services.AddHttpClient();
+        
+        // Configure named HttpClient for addon requests (short timeout, no retries)
+        services.AddHttpClient("Jfresolve.Addon")
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                MaxConnectionsPerServer = 10,
+                AllowAutoRedirect = true
+            })
+            .SetHandlerLifetime(TimeSpan.FromMinutes(5));
+
+        // Configure named HttpClient for streaming (long timeout, connection pooling)
+        services.AddHttpClient("Jfresolve.Stream")
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                MaxConnectionsPerServer = 20,
+                AllowAutoRedirect = false // We handle redirects manually
+            })
+            .SetHandlerLifetime(TimeSpan.FromMinutes(10));
         
         // Register HttpContextAccessor for accessing HTTP context in decorators (required for Jellyfin 10.11.6 compatibility)
         services.AddHttpContextAccessor();

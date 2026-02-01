@@ -47,8 +47,6 @@ public class JfresolveManager
     private readonly ConcurrentDictionary<Guid, DateTime> _syncCache = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _itemLocks = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _pathLocks = new();
-    private static readonly TimeSpan CacheExpiry = TimeSpan.FromMinutes(2);
-    private const int MAX_CACHE_SIZE = 500; // Limit cache to 500 items (~5 MB max)
 
     public JfresolveManager(
         ILogger<JfresolveManager> log,
@@ -72,9 +70,9 @@ public class JfresolveManager
     public void SaveTmdbMetadata(Guid guid, object meta)
     {
         // If cache is full, remove oldest entries (10% of max size)
-        if (_metadataCache.Count >= MAX_CACHE_SIZE)
+        if (_metadataCache.Count >= Constants.MaxMetadataCacheSize)
         {
-            var entriesToRemove = (int)(MAX_CACHE_SIZE * 0.1); // Remove 10% to avoid frequent evictions
+            var entriesToRemove = (int)(Constants.MaxMetadataCacheSize * Constants.CacheEvictionPercentage);
             var oldestEntries = _metadataCache
                 .OrderBy(x => x.Value.Added)
                 .Take(entriesToRemove)
@@ -87,12 +85,12 @@ public class JfresolveManager
             }
 
             _log.LogDebug("Jfresolve: Cache full, evicted {Count} oldest entries (cache size: {Size}/{Max})",
-                entriesToRemove, _metadataCache.Count, MAX_CACHE_SIZE);
+                entriesToRemove, _metadataCache.Count, Constants.MaxMetadataCacheSize);
         }
 
         _metadataCache.TryAdd(guid, (meta, DateTime.UtcNow));
         _log.LogDebug("Jfresolve: Cached metadata for {Guid} (cache size: {Size}/{Max})",
-            guid, _metadataCache.Count, MAX_CACHE_SIZE);
+            guid, _metadataCache.Count, Constants.MaxMetadataCacheSize);
     }
 
     public T? GetTmdbMetadata<T>(Guid guid) where T : class
@@ -878,8 +876,8 @@ public async Task<(BaseItem? Item, bool Created)> InsertMeta(
 /// </summary>
 private async Task SaveImageWithRetry(BaseItem item, string url, ImageType imageType, CancellationToken ct)
 {
-    const int maxRetries = 5;
-    var delays = new[] { 500, 1000, 2000, 5000, 10000, 15000 }; // milliseconds
+    const int maxRetries = Constants.MaxImageRetryAttempts;
+    var delays = Constants.ImageRetryDelays;
 
     for (int attempt = 0; attempt <= maxRetries; attempt++)
     {
@@ -974,7 +972,7 @@ private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, Cancellatio
         var now = DateTime.UtcNow;
         if (_syncCache.TryGetValue(series.Id, out var lastSync))
         {
-            if (now - lastSync < CacheExpiry)
+            if (now - lastSync < Constants.CacheExpiry)
             {
                 _log.LogDebug("Jfresolve: Skipping sync for {Name} - synced {Seconds} seconds ago",
                     series.Name, (now - lastSync).TotalSeconds);
@@ -991,7 +989,7 @@ private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, Cancellatio
             // Re-check cache inside lock in case another thread just finished
             if (_syncCache.TryGetValue(series.Id, out lastSync))
             {
-                if (now - lastSync < CacheExpiry)
+                if (now - lastSync < Constants.CacheExpiry)
                 {
                     return;
                 }

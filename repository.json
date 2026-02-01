@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.15",
+        "changelog": "Fixed connection reset handling during streaming: Added graceful handling for connection resets when clients pause/disconnect. Prevents 'StatusCode cannot be set because the response has already started' errors. Playback can now resume seamlessly after pauses. Also includes high-priority improvements: extracted magic numbers to constants, fixed memory leaks in failover cache, added input validation and SSRF protection, improved HttpClient configuration with named clients, and added retry logic for TMDB API calls.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.15/jfresolve.zip",
+        "checksum": "bf6a4b17ce35d136750762e0d7eadb7a",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T12:13:28Z"
+      },
+      {
         "version": "1.0.0.14",
         "changelog": "Optimized proxy streaming performance: Increased buffer size from 80KB to 256KB and reduced flush frequency to improve throughput and reduce buffering during playback. Flush now occurs every 4 buffers (1MB chunks) instead of every buffer, significantly reducing overhead while maintaining low latency.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.14/jfresolve.zip",

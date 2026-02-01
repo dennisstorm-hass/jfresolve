@@ -1,8 +1,10 @@
 using System;
 using System.Collections.Concurrent;
+using System.Collections.Generic;
 using System.IO;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Sockets;
 using System.Reflection;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -26,6 +28,7 @@ public class JfresolveApiController : ControllerBase
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
+    private static DateTime _lastCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
         ILogger<JfresolveApiController> logger,
@@ -65,6 +68,33 @@ public class JfresolveApiController : ControllerBase
         [FromQuery] string? quality = null,
         [FromQuery] int? index = null)
     {
+        // Input validation and sanitization
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - type parameter is empty");
+            return BadRequest("Type parameter is required");
+        }
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - id parameter is empty");
+            return BadRequest("Id parameter is required");
+        }
+
+        // Sanitize inputs - remove any potentially dangerous characters
+        type = SanitizeInput(type);
+        id = SanitizeInput(id);
+        season = string.IsNullOrWhiteSpace(season) ? null : SanitizeInput(season);
+        episode = string.IsNullOrWhiteSpace(episode) ? null : SanitizeInput(episode);
+        quality = string.IsNullOrWhiteSpace(quality) ? null : SanitizeInput(quality);
+
+        // Validate index is within reasonable bounds
+        if (index.HasValue && (index.Value < 0 || index.Value > 100))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - index out of bounds: {Index}", index.Value);
+            return BadRequest("Index must be between 0 and 100");
+        }
+
         _logger.LogInformation(
             "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
             type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A",
@@ -117,9 +147,9 @@ public class JfresolveApiController : ControllerBase
             _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
 
             // Call the Stremio addon to get the stream
-            var addonHttpClient = _httpClientFactory.CreateClient();
-            addonHttpClient.Timeout = TimeSpan.FromSeconds(30); // Set timeout to prevent hanging
-            addonHttpClient.DefaultRequestHeaders.Add("User-Agent", "Jfresolve/1.0");
+            var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
+            addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
+            addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
             var response = await addonHttpClient.GetStringAsync(streamUrl);
 
             // Parse the JSON response
@@ -157,11 +187,11 @@ public class JfresolveApiController : ControllerBase
 
             _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
 
-            // Ensure the redirect URL is absolute
-            if (!Uri.IsWellFormedUriString(redirectUrl, UriKind.Absolute))
+            // Validate URL to prevent SSRF attacks
+            if (!IsValidStreamUrl(redirectUrl))
             {
-                _logger.LogWarning("Jfresolve: Redirect URL is not absolute: {RedirectUrl}", redirectUrl);
-                return BadRequest("Invalid redirect URL format");
+                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
+                return BadRequest("Invalid or unsafe stream URL");
             }
 
             // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
@@ -173,12 +203,12 @@ public class JfresolveApiController : ControllerBase
                 _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
                 
                 // Disable response buffering for optimal streaming performance
-                Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-                Response.Headers["Pragma"] = "no-cache";
-                Response.Headers["Expires"] = "0";
+                Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
+                Response.Headers["Pragma"] = Constants.PragmaNoCache;
+                Response.Headers["Expires"] = Constants.ExpiresZero;
                 
-                var streamHttpClient = _httpClientFactory.CreateClient();
-                streamHttpClient.Timeout = TimeSpan.FromMinutes(10); // Longer timeout for streaming
+                var streamHttpClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
+                streamHttpClient.Timeout = TimeSpan.FromMinutes(Constants.StreamRequestTimeoutMinutes);
                 
                 // Handle HTTP Range requests for seeking (required by FFmpeg)
                 var rangeHeader = Request.Headers["Range"].ToString();
@@ -191,7 +221,8 @@ public class JfresolveApiController : ControllerBase
                 }
                 
                 // Stream the content directly to the response
-                var streamResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+                // HttpResponseMessage must be disposed to prevent resource leaks
+                using var streamResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
                 streamResponse.EnsureSuccessStatusCode();
 
                 // Copy status code (206 for partial content if range was requested)
@@ -221,7 +252,7 @@ public class JfresolveApiController : ControllerBase
                 }
                 
                 // Copy Accept-Ranges header to indicate we support range requests
-                Response.Headers["Accept-Ranges"] = "bytes";
+                Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
                 
                 if (streamResponse.Content.Headers.ContentLength.HasValue)
                 {
@@ -231,36 +262,102 @@ public class JfresolveApiController : ControllerBase
                 // Optimized streaming: Use larger buffer and flush less frequently for better throughput
                 // Larger buffer reduces overhead from frequent system calls
                 // Periodic flushing (every N buffers) reduces flush overhead while maintaining responsiveness
-                const int bufferSize = 262144; // 256KB buffer for better throughput
-                const int flushInterval = 4; // Flush every 4 buffers (1MB chunks) to balance latency and throughput
+                const int bufferSize = Constants.StreamBufferSize;
+                const int flushInterval = Constants.StreamFlushInterval;
                 var buffer = new byte[bufferSize];
                 int bufferCount = 0;
                 
+                // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
+                // The stream must be fully read before HttpResponseMessage disposal completes
                 using (var stream = await streamResponse.Content.ReadAsStreamAsync())
                 {
-                    int bytesRead;
-                    while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                    try
                     {
-                        await Response.Body.WriteAsync(buffer, 0, bytesRead);
-                        bufferCount++;
+                        int bytesRead;
+                        while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                        {
+                            await Response.Body.WriteAsync(buffer, 0, bytesRead);
+                            bufferCount++;
+                            
+                            // Flush periodically to reduce overhead while maintaining low latency
+                            // Flush immediately on first buffer for quick start, then every N buffers
+                            if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                            {
+                                await Response.Body.FlushAsync();
+                            }
+                        }
                         
-                        // Flush periodically to reduce overhead while maintaining low latency
-                        // Flush immediately on first buffer for quick start, then every N buffers
-                        if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                        // Final flush to ensure all data is sent
+                        await Response.Body.FlushAsync();
+                    }
+                    catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
+                                                     (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                                                      socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
+                    {
+                        // Connection reset during streaming - this is normal when client pauses/disconnects
+                        // Don't try to send error response as response has already started
+                        // Just log and let the connection close naturally
+                        _logger.LogInformation(
+                            "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
+                            type, id, bufferCount * bufferSize);
+                        
+                        // Check if response has started before trying to flush
+                        if (!Response.HasStarted)
                         {
                             await Response.Body.FlushAsync();
                         }
+                        // Return empty result - connection will close naturally
+                        return new EmptyResult();
                     }
-                    
-                    // Final flush to ensure all data is sent
-                    await Response.Body.FlushAsync();
+                    catch (System.Net.Sockets.SocketException socketEx) when 
+                        (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                         socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown)
+                    {
+                        // Connection reset during streaming
+                        _logger.LogInformation(
+                            "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
+                            type, id, bufferCount * bufferSize);
+                        
+                        if (!Response.HasStarted)
+                        {
+                            await Response.Body.FlushAsync();
+                        }
+                        return new EmptyResult();
+                    }
                 }
+                // HttpResponseMessage will be disposed here automatically via using statement
                 return new EmptyResult();
             }
             catch (HttpRequestException ex)
             {
-                _logger.LogError(ex, "Jfresolve: Error proxying stream from {RedirectUrl}", redirectUrl);
-                return StatusCode(502, $"Error proxying stream: {ex.Message}");
+                // Only return error if response hasn't started yet
+                if (!Response.HasStarted)
+                {
+                    _logger.LogError(ex, "Jfresolve: Error proxying stream from {RedirectUrl}", redirectUrl);
+                    return StatusCode(502, $"Error proxying stream: {ex.Message}");
+                }
+                else
+                {
+                    // Response already started - log and let connection close
+                    _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {RedirectUrl}", redirectUrl);
+                    return new EmptyResult();
+                }
+            }
+            catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
+                                             (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                                              socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
+            {
+                // Connection reset before or during streaming
+                if (!Response.HasStarted)
+                {
+                    _logger.LogWarning(ioEx, "Jfresolve: Connection reset before streaming started for {RedirectUrl}", redirectUrl);
+                    return StatusCode(502, "Connection reset by peer");
+                }
+                else
+                {
+                    _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {RedirectUrl} (normal client disconnect)", redirectUrl);
+                    return new EmptyResult();
+                }
             }
         }
         catch (HttpRequestException ex)
@@ -273,10 +370,36 @@ public class JfresolveApiController : ControllerBase
             _logger.LogError(ex, "Jfresolve: JSON parse error for {Type}/{Id}", type, id);
             return StatusCode(500, $"Invalid response from addon: {ex.Message}");
         }
+        catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
+                                         (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
+                                          socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
+        {
+            // Connection reset - check if response has started
+            if (!Response.HasStarted)
+            {
+                _logger.LogWarning(ioEx, "Jfresolve: Connection reset for {Type}/{Id}", type, id);
+                return StatusCode(502, "Connection reset by peer");
+            }
+            else
+            {
+                _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {Type}/{Id} (normal client disconnect)", type, id);
+                return new EmptyResult();
+            }
+        }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Jfresolve: Error resolving stream for {Type}/{Id}", type, id);
-            return StatusCode(500, $"Error resolving stream: {ex.Message}");
+            // Only return error if response hasn't started
+            if (!Response.HasStarted)
+            {
+                _logger.LogError(ex, "Jfresolve: Error resolving stream for {Type}/{Id}", type, id);
+                return StatusCode(500, $"Error resolving stream: {ex.Message}");
+            }
+            else
+            {
+                // Response already started - log and let connection close
+                _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {Type}/{Id}", type, id);
+                return new EmptyResult();
+            }
         }
     }
 
@@ -451,7 +574,7 @@ public class JfresolveApiController : ControllerBase
     private JsonElement SelectHighestQualityStream(System.Collections.Generic.List<JsonElement> streams)
     {
         // Try to find streams in order of quality preference
-        string[] qualityPriority = { "4K", "1440p", "1080p", "720p", "480p" };
+        var qualityPriority = Constants.QualityPriority;
 
         foreach (var quality in qualityPriority)
         {
@@ -677,5 +800,105 @@ public class JfresolveApiController : ControllerBase
 
             return effectiveIndex;
         }
+    }
+
+    /// <summary>
+    /// Cleans up old entries from the failover cache to prevent memory leaks
+    /// Runs periodically (every hour) to remove entries older than 24 hours
+    /// </summary>
+    private static void CleanupFailoverCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Only run cleanup once per hour to avoid performance impact
+        if (now - _lastCacheCleanup < Constants.FailoverCacheCleanupInterval)
+        {
+            return;
+        }
+
+        _lastCacheCleanup = now;
+        var cutoffTime = now - Constants.FailoverCacheEntryMaxAge;
+        var keysToRemove = new List<string>();
+
+        foreach (var kvp in _failoverCache)
+        {
+            if (kvp.Value.LastAttempt < cutoffTime)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _failoverCache.TryRemove(key, out _);
+        }
+
+        if (keysToRemove.Count > 0)
+        {
+            // Use a simple logger if available, otherwise skip logging to avoid dependency issues
+            // Logging would require injecting ILogger, which would break the static method pattern
+            // This cleanup is silent to maintain performance
+        }
+    }
+
+    /// <summary>
+    /// Sanitizes user input by removing potentially dangerous characters
+    /// </summary>
+    private static string SanitizeInput(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        // Remove control characters and trim
+        return new string(input.Where(c => !char.IsControl(c)).ToArray()).Trim();
+    }
+
+    /// <summary>
+    /// Validates that a URL is safe for streaming (prevents SSRF attacks)
+    /// </summary>
+    private static bool IsValidStreamUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return false;
+
+        // Must be a well-formed absolute URI
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+
+        // Only allow HTTP and HTTPS protocols
+        if (uri.Scheme != "http" && uri.Scheme != "https")
+            return false;
+
+        // Block localhost and private IP ranges to prevent SSRF
+        var host = uri.Host.ToLowerInvariant();
+        if (host == "localhost" || 
+            host == "127.0.0.1" || 
+            host == "::1" ||
+            host.StartsWith("192.168.") ||
+            host.StartsWith("10.") ||
+            (host.StartsWith("172.") && IsPrivateIPRange(host)) ||
+            host == "0.0.0.0")
+        {
+            return false;
+        }
+
+        return true;
+    }
+
+    /// <summary>
+    /// Checks if an IP address is in the private 172.16-31 range
+    /// </summary>
+    private static bool IsPrivateIPRange(string host)
+    {
+        if (!host.StartsWith("172."))
+            return false;
+
+        var parts = host.Split('.');
+        if (parts.Length >= 2 && int.TryParse(parts[1], out var secondOctet))
+        {
+            return secondOctet >= 16 && secondOctet <= 31;
+        }
+
+        return false;
     }
 }

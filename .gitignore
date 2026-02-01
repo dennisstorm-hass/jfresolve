@@ -87,6 +87,7 @@ launchSettings.json
 
 # Documentation
 PLUGIN_DOCUMENTATION.md
+IMPROVEMENTS.md
 
 Backups
 *.backups_hidden

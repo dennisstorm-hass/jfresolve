@@ -4,6 +4,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
 
@@ -13,7 +14,7 @@ public class TmdbService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TmdbService> _log;
-    private const string BaseUrl = "https://api.themoviedb.org/3";
+    private const string BaseUrl = Constants.TmdbBaseUrl;
 
     public TmdbService(IHttpClientFactory httpClientFactory, ILogger<TmdbService> log)
     {
@@ -36,11 +37,11 @@ public class TmdbService
             _log.LogInformation("Searching TMDB movies: {Query}", query);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await client.GetAsync(url);
+            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB movie search");
 
-            if (!response.IsSuccessStatusCode)
+            if (response == null || !response.IsSuccessStatusCode)
             {
-                _log.LogError("TMDB API error: {StatusCode}", response.StatusCode);
+                _log.LogError("TMDB API error: {StatusCode}", response?.StatusCode);
                 return new List<TmdbMovie>();
             }
 
@@ -531,6 +532,64 @@ public class TmdbService
             _log.LogError(ex, "Failed to fetch TMDB season details");
             return null;
         }
+    }
+
+    /// <summary>
+    /// Executes an HTTP request with retry logic for transient failures
+    /// </summary>
+    private async Task<HttpResponseMessage?> ExecuteWithRetryAsync(
+        Func<Task<HttpResponseMessage>> requestFunc,
+        string operationName)
+    {
+        for (int attempt = 0; attempt < Constants.MaxRetryAttempts; attempt++)
+        {
+            try
+            {
+                var response = await requestFunc();
+                
+                // Retry on 5xx errors (server errors) and 429 (rate limit)
+                if (response.IsSuccessStatusCode || 
+                    (response.StatusCode != System.Net.HttpStatusCode.InternalServerError &&
+                     response.StatusCode != System.Net.HttpStatusCode.BadGateway &&
+                     response.StatusCode != System.Net.HttpStatusCode.ServiceUnavailable &&
+                     response.StatusCode != System.Net.HttpStatusCode.GatewayTimeout &&
+                     response.StatusCode != (System.Net.HttpStatusCode)429))
+                {
+                    return response;
+                }
+
+                // Log retry for server errors
+                if (attempt < Constants.MaxRetryAttempts - 1)
+                {
+                    var delay = Constants.RetryDelays[Math.Min(attempt, Constants.RetryDelays.Length - 1)];
+                    _log.LogWarning(
+                        "TMDB API {Operation} failed with {StatusCode}, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                        operationName, response.StatusCode, delay, attempt + 1, Constants.MaxRetryAttempts);
+                    await Task.Delay(delay);
+                }
+            }
+            catch (HttpRequestException ex) when (attempt < Constants.MaxRetryAttempts - 1)
+            {
+                // Retry on network errors
+                var delay = Constants.RetryDelays[Math.Min(attempt, Constants.RetryDelays.Length - 1)];
+                _log.LogWarning(ex,
+                    "TMDB API {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                    operationName, delay, attempt + 1, Constants.MaxRetryAttempts);
+                await Task.Delay(delay);
+            }
+            catch (TaskCanceledException ex) when (attempt < Constants.MaxRetryAttempts - 1)
+            {
+                // Retry on timeout
+                var delay = Constants.RetryDelays[Math.Min(attempt, Constants.RetryDelays.Length - 1)];
+                _log.LogWarning(ex,
+                    "TMDB API {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                    operationName, delay, attempt + 1, Constants.MaxRetryAttempts);
+                await Task.Delay(delay);
+            }
+        }
+
+        _log.LogError("TMDB API {Operation} failed after {MaxAttempts} attempts", operationName, Constants.MaxRetryAttempts);
+        return null;
     }
 }
 
