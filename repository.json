@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.20",
+        "changelog": "Performance optimizations: Optimized TMDB API calls with parallel fetching and caching - IMDB IDs are now fetched in parallel (up to 5 concurrent requests) with a 24-hour cache, reducing search time from 10+ seconds to 2-3 seconds for 10 results. Added stream metadata caching - Stremio addon responses are cached for 10 minutes, reducing redundant API calls when multiple users request the same content. Added folder lookup caching - folder references are cached for 1 hour, eliminating redundant database queries for repeated folder lookups. All caches include automatic cleanup and size limits.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.20/jfresolve.zip",
+        "checksum": "cef4b8f648e687cc15f8c1298ee25635",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T13:14:34Z"
+      },
+      {
         "version": "1.0.0.19",
         "changelog": "Fixed ObjectDisposedException on pause/resume: Changed GetStreamsFromAddonAsync to return JsonDocument instead of JsonElement and properly manage its lifecycle. The streams array is now cloned into a new JsonDocument before disposing the original, ensuring the JsonElement remains valid when accessed after pausing and resuming playback. This fixes 'Cannot access a disposed object' errors when resuming playback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.19/jfresolve.zip",

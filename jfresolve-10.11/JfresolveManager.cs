@@ -47,6 +47,11 @@ public class JfresolveManager
     private readonly ConcurrentDictionary<Guid, DateTime> _syncCache = new();
     private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _itemLocks = new();
     private readonly ConcurrentDictionary<string, SemaphoreSlim> _pathLocks = new();
+    
+    // Folder lookup cache: caches folder references to reduce database queries
+    // Key: folder path, Value: (Folder, ExpiryTime)
+    private static readonly ConcurrentDictionary<string, (Folder? Folder, DateTime Expiry)> _folderCache = new();
+    private static DateTime _lastFolderCacheCleanup = DateTime.UtcNow;
 
     public JfresolveManager(
         ILogger<JfresolveManager> log,
@@ -184,11 +189,23 @@ public class JfresolveManager
             return null;
         }
 
+        // Normalize path for cache key (case-insensitive, trimmed, normalize separators)
+        var normalizedPath = path.Trim().Replace('\\', '/');
+
+        // Check cache first
+        var now = DateTime.UtcNow;
+        if (_folderCache.TryGetValue(normalizedPath, out var cached) && cached.Expiry > now)
+        {
+            _log.LogDebug("Jfresolve: Using cached folder for path: {Path}", path);
+            return cached.Folder;
+        }
+
         _log.LogDebug("Jfresolve: TryGetFolder looking for path: {Path}", path);
 
         // Seed the folder to ensure it exists and triggers library scans
         SeedFolder(path);
 
+        Folder? folder = null;
         try
         {
             // Query using IItemRepository directly (Gelato pattern)
@@ -232,7 +249,7 @@ public class JfresolveManager
                         _log.LogWarning("Jfresolve: Matching folder - Type: {Type}, Name: {Name}, Path: {FolderPath}",
                             f.GetType().Name, f.Name, f.Path);
                     }
-                    return matchingFolders.First();
+                    folder = matchingFolders.First();
                 }
 
                 // Log some sample folder paths to help debug
@@ -243,7 +260,10 @@ public class JfresolveManager
                 }
             }
 
-            var folder = allItems.OfType<Folder>().FirstOrDefault();
+            if (folder == null)
+            {
+                folder = allItems.OfType<Folder>().FirstOrDefault();
+            }
 
             if (folder is null)
             {
@@ -258,6 +278,13 @@ public class JfresolveManager
                 _log.LogDebug("Jfresolve: Found folder '{Name}' (Type: {Type}) at path '{Path}'",
                     folder.Name, folder.GetType().Name, path);
             }
+
+            // Cache the result (even if null, to avoid repeated queries for non-existent folders)
+            var expiry = now.Add(Constants.FolderCacheExpiry);
+            _folderCache.AddOrUpdate(normalizedPath, (folder, expiry), (key, oldValue) => (folder, expiry));
+            
+            // Cleanup old cache entries if needed
+            CleanupFolderCacheIfNeeded();
 
             return folder;
         }
@@ -1333,6 +1360,58 @@ private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, Cancellatio
         }
 
         return tasks;
+    }
+
+    /// <summary>
+    /// Cleans up expired entries from the folder cache
+    /// </summary>
+    private static void CleanupFolderCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Only run cleanup periodically to avoid performance impact
+        if (now - _lastFolderCacheCleanup < Constants.FolderCacheCleanupInterval)
+        {
+            return;
+        }
+
+        _lastFolderCacheCleanup = now;
+        var keysToRemove = new List<string>();
+
+        // Remove expired entries
+        foreach (var kvp in _folderCache)
+        {
+            if (kvp.Value.Expiry <= now)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _folderCache.TryRemove(key, out _);
+        }
+
+        // If still too large, remove oldest entries
+        if (_folderCache.Count > Constants.FolderCacheMaxSize)
+        {
+            var entriesToRemove = _folderCache.Count - Constants.FolderCacheMaxSize;
+            var sortedByExpiry = _folderCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
+            
+            foreach (var kvp in sortedByExpiry)
+            {
+                _folderCache.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
+
+    /// <summary>
+    /// Invalidates the folder cache (call this when library is scanned)
+    /// </summary>
+    public static void InvalidateFolderCache()
+    {
+        _folderCache.Clear();
+        _lastFolderCacheCleanup = DateTime.UtcNow;
     }
 
     // ============ DELETE SUPPORT ============

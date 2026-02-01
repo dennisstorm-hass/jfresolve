@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
@@ -15,6 +16,13 @@ public class TmdbService
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TmdbService> _log;
     private const string BaseUrl = Constants.TmdbBaseUrl;
+
+    // Cache for IMDB ID lookups to avoid redundant API calls
+    // Key: "{mediaType}:{tmdbId}", Value: (ImdbId, ExpiryTime)
+    private static readonly ConcurrentDictionary<string, (string? ImdbId, DateTime Expiry)> _imdbIdCache = new();
+    
+    // Semaphore to throttle concurrent TMDB API requests
+    private static readonly SemaphoreSlim _requestThrottle = new(Constants.MaxConcurrentTmdbRequests, Constants.MaxConcurrentTmdbRequests);
 
     public TmdbService(IHttpClientFactory httpClientFactory, ILogger<TmdbService> log)
     {
@@ -50,16 +58,13 @@ public class TmdbService
 
             var movies = result?.Results ?? new List<TmdbMovie>();
 
-            // Fetch IMDB IDs for each movie
-            foreach (var movie in movies)
-            {
-                var externalIds = await GetExternalIdsAsync(movie.Id, "movie", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    movie.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for movie '{Title}'", movie.ImdbId, movie.Title);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                movies,
+                m => m.Id,
+                "movie",
+                apiKey,
+                (m, imdbId) => m.ImdbId = imdbId);
 
             return movies;
         }
@@ -85,11 +90,11 @@ public class TmdbService
             _log.LogInformation("Searching TMDB TV shows: {Query}", query);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await client.GetAsync(url);
+            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB TV show search");
 
-            if (!response.IsSuccessStatusCode)
+            if (response == null || !response.IsSuccessStatusCode)
             {
-                _log.LogError("TMDB API error: {StatusCode}", response.StatusCode);
+                _log.LogError("TMDB API error: {StatusCode}", response?.StatusCode);
                 return new List<TmdbTvShow>();
             }
 
@@ -98,16 +103,13 @@ public class TmdbService
 
             var tvShows = result?.Results ?? new List<TmdbTvShow>();
 
-            // Fetch IMDB IDs for each TV show
-            foreach (var show in tvShows)
-            {
-                var externalIds = await GetExternalIdsAsync(show.Id, "tv", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    show.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for TV show '{Name}'", show.ImdbId, show.Name);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                tvShows,
+                s => s.Id,
+                "tv",
+                apiKey,
+                (s, imdbId) => s.ImdbId = imdbId);
 
             return tvShows;
         }
@@ -152,16 +154,13 @@ public class TmdbService
 
             var movies = result?.Results ?? new List<TmdbMovie>();
 
-            // Fetch IMDB IDs for each movie
-            foreach (var movie in movies)
-            {
-                var externalIds = await GetExternalIdsAsync(movie.Id, "movie", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    movie.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for trending movie '{Title}'", movie.ImdbId, movie.Title);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                movies,
+                m => m.Id,
+                "movie",
+                apiKey,
+                (m, imdbId) => m.ImdbId = imdbId);
 
             return movies;
         }
@@ -204,16 +203,13 @@ public class TmdbService
 
             var tvShows = result?.Results ?? new List<TmdbTvShow>();
 
-            // Fetch IMDB IDs for each TV show
-            foreach (var tvShow in tvShows)
-            {
-                var externalIds = await GetExternalIdsAsync(tvShow.Id, "tv", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    tvShow.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for trending TV show '{Name}'", tvShow.ImdbId, tvShow.Name);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                tvShows,
+                s => s.Id,
+                "tv",
+                apiKey,
+                (s, imdbId) => s.ImdbId = imdbId);
 
             return tvShows;
         }
@@ -255,16 +251,13 @@ public class TmdbService
 
             var movies = result?.Results ?? new List<TmdbMovie>();
 
-            // Fetch IMDB IDs for each movie
-            foreach (var movie in movies)
-            {
-                var externalIds = await GetExternalIdsAsync(movie.Id, "movie", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    movie.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for popular movie '{Title}'", movie.ImdbId, movie.Title);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                movies,
+                m => m.Id,
+                "movie",
+                apiKey,
+                (m, imdbId) => m.ImdbId = imdbId);
 
             return movies;
         }
@@ -306,16 +299,13 @@ public class TmdbService
 
             var tvShows = result?.Results ?? new List<TmdbTvShow>();
 
-            // Fetch IMDB IDs for each TV show
-            foreach (var tvShow in tvShows)
-            {
-                var externalIds = await GetExternalIdsAsync(tvShow.Id, "tv", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    tvShow.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for popular TV show '{Name}'", tvShow.ImdbId, tvShow.Name);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                tvShows,
+                s => s.Id,
+                "tv",
+                apiKey,
+                (s, imdbId) => s.ImdbId = imdbId);
 
             return tvShows;
         }
@@ -357,16 +347,13 @@ public class TmdbService
 
             var movies = result?.Results ?? new List<TmdbMovie>();
 
-            // Fetch IMDB IDs for each movie
-            foreach (var movie in movies)
-            {
-                var externalIds = await GetExternalIdsAsync(movie.Id, "movie", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    movie.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for movie '{Title}'", movie.ImdbId, movie.Title);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                movies,
+                m => m.Id,
+                "movie",
+                apiKey,
+                (m, imdbId) => m.ImdbId = imdbId);
 
             return movies;
         }
@@ -408,16 +395,13 @@ public class TmdbService
 
             var tvShows = result?.Results ?? new List<TmdbTvShow>();
 
-            // Fetch IMDB IDs for each TV show
-            foreach (var show in tvShows)
-            {
-                var externalIds = await GetExternalIdsAsync(show.Id, "tv", apiKey);
-                if (externalIds?.ImdbId != null)
-                {
-                    show.ImdbId = externalIds.ImdbId;
-                    _log.LogDebug("Fetched IMDB ID {ImdbId} for TV show '{Name}'", show.ImdbId, show.Name);
-                }
-            }
+            // Fetch IMDB IDs in parallel with throttling and caching
+            await FetchExternalIdsInParallelAsync(
+                tvShows,
+                s => s.Id,
+                "tv",
+                apiKey,
+                (s, imdbId) => s.ImdbId = imdbId);
 
             return tvShows;
         }
@@ -436,24 +420,53 @@ public class TmdbService
             return null;
         }
 
+        // Check cache first
+        var cacheKey = $"{mediaType}:{tmdbId}";
+        var now = DateTime.UtcNow;
+        
+        if (_imdbIdCache.TryGetValue(cacheKey, out var cached) && cached.Expiry > now)
+        {
+            _log.LogDebug("Using cached IMDB ID for TMDB {MediaType} ID: {TmdbId}", mediaType, tmdbId);
+            return new TmdbExternalIds { ImdbId = cached.ImdbId };
+        }
+
+        // Throttle concurrent requests
+        await _requestThrottle.WaitAsync();
         try
         {
+            // Double-check cache after acquiring lock (another thread might have fetched it)
+            if (_imdbIdCache.TryGetValue(cacheKey, out cached) && cached.Expiry > now)
+            {
+                _log.LogDebug("Using cached IMDB ID for TMDB {MediaType} ID: {TmdbId} (after lock)", mediaType, tmdbId);
+                return new TmdbExternalIds { ImdbId = cached.ImdbId };
+            }
+
             // mediaType should be "movie" or "tv"
             var url = $"{BaseUrl}/{mediaType}/{tmdbId}/external_ids?api_key={apiKey}";
 
             _log.LogDebug("Fetching external IDs for TMDB {MediaType} ID: {TmdbId}", mediaType, tmdbId);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await client.GetAsync(url);
+            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), $"external IDs for {mediaType}/{tmdbId}");
 
-            if (!response.IsSuccessStatusCode)
+            if (response == null || !response.IsSuccessStatusCode)
             {
-                _log.LogError("TMDB API error fetching external IDs: {StatusCode}", response.StatusCode);
+                _log.LogError("TMDB API error fetching external IDs: {StatusCode}", response?.StatusCode);
                 return null;
             }
 
             var json = await response.Content.ReadAsStringAsync();
             var result = JsonSerializer.Deserialize<TmdbExternalIds>(json);
+
+            // Cache the result
+            if (result != null)
+            {
+                var expiry = now.Add(Constants.ImdbIdCacheExpiry);
+                _imdbIdCache.AddOrUpdate(cacheKey, (result.ImdbId, expiry), (key, oldValue) => (result.ImdbId, expiry));
+                
+                // Cleanup old cache entries if cache is getting too large
+                CleanupImdbIdCacheIfNeeded();
+            }
 
             return result;
         }
@@ -461,6 +474,78 @@ public class TmdbService
         {
             _log.LogError(ex, "Failed to fetch TMDB external IDs");
             return null;
+        }
+        finally
+        {
+            _requestThrottle.Release();
+        }
+    }
+
+    /// <summary>
+    /// Fetches external IDs for multiple items in parallel with throttling
+    /// </summary>
+    private async Task FetchExternalIdsInParallelAsync<T>(
+        List<T> items,
+        Func<T, int> getTmdbId,
+        string mediaType,
+        string apiKey,
+        Action<T, string?> setImdbId)
+    {
+        if (items.Count == 0)
+            return;
+
+        // Create tasks for parallel fetching
+        var tasks = items.Select(async item =>
+        {
+            var tmdbId = getTmdbId(item);
+            var externalIds = await GetExternalIdsAsync(tmdbId, mediaType, apiKey);
+            if (externalIds?.ImdbId != null)
+            {
+                setImdbId(item, externalIds.ImdbId);
+                _log.LogDebug("Fetched IMDB ID {ImdbId} for TMDB {MediaType} ID: {TmdbId}", 
+                    externalIds.ImdbId, mediaType, tmdbId);
+            }
+        });
+
+        // Execute all tasks in parallel (throttling is handled by GetExternalIdsAsync)
+        await Task.WhenAll(tasks);
+    }
+
+    /// <summary>
+    /// Cleans up old cache entries if the cache is getting too large
+    /// </summary>
+    private static void CleanupImdbIdCacheIfNeeded()
+    {
+        if (_imdbIdCache.Count <= Constants.ImdbIdCacheMaxSize)
+            return;
+
+        var now = DateTime.UtcNow;
+        var keysToRemove = new List<string>();
+        
+        // Remove expired entries first
+        foreach (var kvp in _imdbIdCache)
+        {
+            if (kvp.Value.Expiry <= now)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _imdbIdCache.TryRemove(key, out _);
+        }
+
+        // If still too large, remove oldest entries
+        if (_imdbIdCache.Count > Constants.ImdbIdCacheMaxSize)
+        {
+            var entriesToRemove = _imdbIdCache.Count - Constants.ImdbIdCacheMaxSize;
+            var sortedByExpiry = _imdbIdCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
+            
+            foreach (var kvp in sortedByExpiry)
+            {
+                _imdbIdCache.TryRemove(kvp.Key, out _);
+            }
         }
     }
 

@@ -48,4 +48,19 @@ public static class Constants
     // Retry configuration
     public const int MaxRetryAttempts = 3;
     public static readonly int[] RetryDelays = { 500, 1000, 2000 }; // milliseconds, exponential backoff
+
+    // TMDB API optimization
+    public const int MaxConcurrentTmdbRequests = 5; // Max concurrent requests to TMDB API (rate limit protection)
+    public const int ImdbIdCacheMaxSize = 1000; // Maximum cached IMDB ID lookups
+    public static readonly TimeSpan ImdbIdCacheExpiry = TimeSpan.FromHours(24); // Cache IMDB IDs for 24 hours
+
+    // Stream metadata caching
+    public const int StreamMetadataCacheMaxSize = 500; // Maximum cached stream metadata responses
+    public static readonly TimeSpan StreamMetadataCacheExpiry = TimeSpan.FromMinutes(10); // Cache stream metadata for 10 minutes
+    public static readonly TimeSpan StreamMetadataCacheCleanupInterval = TimeSpan.FromMinutes(30); // Cleanup every 30 minutes
+
+    // Folder lookup caching
+    public const int FolderCacheMaxSize = 100; // Maximum cached folder references
+    public static readonly TimeSpan FolderCacheExpiry = TimeSpan.FromHours(1); // Cache folders for 1 hour
+    public static readonly TimeSpan FolderCacheCleanupInterval = TimeSpan.FromHours(2); // Cleanup every 2 hours
 }

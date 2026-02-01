@@ -32,6 +32,11 @@ public class JfresolveApiController : ControllerBase
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
     private static DateTime _lastCacheCleanup = DateTime.UtcNow;
 
+    // Stream metadata cache: caches Stremio addon responses (stream lists) with TTL
+    // Key: stream URL, Value: (Serialized JSON, ExpiryTime)
+    private static readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
+    private static DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
+
     public JfresolveApiController(
         ILogger<JfresolveApiController> logger,
         IHttpClientFactory httpClientFactory,
@@ -225,7 +230,7 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
-    /// Gets streams from the Stremio addon
+    /// Gets streams from the Stremio addon with caching
     /// Returns JsonDocument that must be disposed by the caller
     /// </summary>
     private async Task<JsonDocument?> GetStreamsFromAddonAsync(
@@ -245,6 +250,30 @@ public class JfresolveApiController : ControllerBase
             return null;
         }
 
+        // Check cache first
+        var now = DateTime.UtcNow;
+        if (_streamMetadataCache.TryGetValue(streamUrl, out var cached) && cached.Expiry > now)
+        {
+            _logger.LogDebug("Jfresolve: Using cached stream metadata for {StreamUrl}", streamUrl);
+            try
+            {
+                // Parse cached JSON and extract streams array
+                var cachedDoc = JsonDocument.Parse(cached.Json);
+                if (cachedDoc.RootElement.TryGetProperty("streams", out var cachedStreams) && cachedStreams.GetArrayLength() > 0)
+                {
+                    var streamsJson = JsonSerializer.Serialize(cachedStreams);
+                    cachedDoc.Dispose();
+                    return JsonDocument.Parse(streamsJson);
+                }
+                cachedDoc.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Jfresolve: Failed to parse cached stream metadata, fetching fresh");
+                // Fall through to fetch fresh data
+            }
+        }
+
         _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
 
         // Call the Stremio addon to get the stream
@@ -260,6 +289,13 @@ public class JfresolveApiController : ControllerBase
         // This allows us to dispose the original document while keeping the streams data alive
         if (json.RootElement.TryGetProperty("streams", out var streams) && streams.GetArrayLength() > 0)
         {
+            // Cache the full response for future requests
+            var expiry = now.Add(Constants.StreamMetadataCacheExpiry);
+            _streamMetadataCache.AddOrUpdate(streamUrl, (response, expiry), (key, oldValue) => (response, expiry));
+            
+            // Cleanup old cache entries if needed
+            CleanupStreamMetadataCacheIfNeeded();
+
             // Clone the streams array into a new JsonDocument
             // This creates an independent copy that can outlive the original document
             var streamsJson = JsonSerializer.Serialize(streams);
@@ -269,6 +305,49 @@ public class JfresolveApiController : ControllerBase
 
         json.Dispose();
         return null;
+    }
+
+    /// <summary>
+    /// Cleans up expired entries from the stream metadata cache
+    /// </summary>
+    private static void CleanupStreamMetadataCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Only run cleanup periodically to avoid performance impact
+        if (now - _lastStreamCacheCleanup < Constants.StreamMetadataCacheCleanupInterval)
+        {
+            return;
+        }
+
+        _lastStreamCacheCleanup = now;
+        var keysToRemove = new List<string>();
+
+        // Remove expired entries
+        foreach (var kvp in _streamMetadataCache)
+        {
+            if (kvp.Value.Expiry <= now)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _streamMetadataCache.TryRemove(key, out _);
+        }
+
+        // If still too large, remove oldest entries
+        if (_streamMetadataCache.Count > Constants.StreamMetadataCacheMaxSize)
+        {
+            var entriesToRemove = _streamMetadataCache.Count - Constants.StreamMetadataCacheMaxSize;
+            var sortedByExpiry = _streamMetadataCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
+            
+            foreach (var kvp in sortedByExpiry)
+            {
+                _streamMetadataCache.TryRemove(kvp.Key, out _);
+            }
+        }
     }
 
     /// <summary>
