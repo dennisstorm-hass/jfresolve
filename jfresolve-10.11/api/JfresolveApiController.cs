@@ -446,11 +446,19 @@ public class JfresolveApiController : ControllerBase
             
             // Handle HTTP Range requests for seeking (required by FFmpeg)
             var rangeHeader = Request.Headers["Range"].ToString();
+            long? rangeStart = null;
+            
+            // Parse range header to extract start position for workaround
+            if (!string.IsNullOrEmpty(rangeHeader))
+            {
+                _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
+                rangeStart = ParseRangeStart(rangeHeader);
+            }
+            
             HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
             
             if (!string.IsNullOrEmpty(rangeHeader))
             {
-                _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
                 requestMessage.Headers.Add("Range", rangeHeader);
             }
             
@@ -473,10 +481,10 @@ public class JfresolveApiController : ControllerBase
             finalStreamResponse.EnsureSuccessStatusCode();
 
             // Copy response headers
-            CopyStreamResponseHeaders(finalStreamResponse);
+            CopyStreamResponseHeaders(finalStreamResponse, rangeHeader, rangeStart);
 
-            // Stream the content
-            await StreamContentAsync(finalStreamResponse, type, id);
+            // Stream the content (with workaround for servers that don't support range requests)
+            await StreamContentAsync(finalStreamResponse, type, id, rangeStart);
             
             return new EmptyResult();
         }
@@ -516,10 +524,75 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Copies response headers from the stream response to the client response
     /// </summary>
-    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse)
+    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, string? rangeHeader, long? rangeStart)
     {
-        // Copy status code (206 for partial content if range was requested)
-        Response.StatusCode = (int)streamResponse.StatusCode;
+        // If upstream server doesn't support range requests (returns 200 instead of 206),
+        // but client requested a range, we need to handle it ourselves
+        bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
+        bool clientRequestedRange = !string.IsNullOrEmpty(rangeHeader) && rangeStart.HasValue;
+        
+        if (clientRequestedRange && !upstreamSupportsRange)
+        {
+            // Upstream doesn't support range requests - we'll skip bytes ourselves
+            // Return 206 Partial Content to client even though upstream returned 200
+            Response.StatusCode = 206;
+            
+            // Calculate Content-Range header based on upstream Content-Length
+            // Format: "bytes start-end/total" or "bytes start-*/total" if we don't know end
+            long? totalLength = streamResponse.Content.Headers.ContentLength;
+            if (totalLength.HasValue && rangeStart.HasValue)
+            {
+                long start = rangeStart.Value;
+                long end = totalLength.Value - 1; // Content-Range end is inclusive
+                long rangeLength = totalLength.Value - start;
+                
+                // Set Content-Range header: "bytes start-end/total"
+                Response.Headers["Content-Range"] = $"bytes {start}-{end}/{totalLength.Value}";
+                
+                // Set Content-Length to the range size we'll actually send
+                Response.ContentLength = rangeLength;
+                
+                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
+                    start, end, totalLength.Value, rangeLength);
+            }
+            else if (rangeStart.HasValue)
+            {
+                // Don't know total length - can't set proper Content-Range
+                // This is okay, we'll still skip bytes and stream the rest
+                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (skipping {Bytes} bytes, unknown total length)", rangeStart.Value);
+            }
+        }
+        else
+        {
+            // Copy status code (206 for partial content if range was requested and supported)
+            Response.StatusCode = (int)streamResponse.StatusCode;
+            
+            // Copy Content-Range header if present (for 206 Partial Content responses)
+            // Content-Range can be in response headers or content headers depending on the server
+            string? contentRangeValue = null;
+            if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
+            {
+                contentRangeValue = responseContentRange.FirstOrDefault();
+            }
+            else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
+            {
+                contentRangeValue = contentContentRange.FirstOrDefault();
+            }
+            
+            if (!string.IsNullOrEmpty(contentRangeValue))
+            {
+                Response.Headers["Content-Range"] = contentRangeValue;
+            }
+            
+            // Only set Content-Length for range requests (206 Partial Content) where we know the exact range size
+            if (upstreamSupportsRange && 
+                streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
+                streamResponse.Content.Headers.ContentLength.HasValue)
+            {
+                // For 206 Partial Content, Content-Length represents the range size, which is safe to set
+                Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+            }
+        }
 
         // Copy headers that might be important for streaming
         if (streamResponse.Content.Headers.ContentType != null)
@@ -527,43 +600,17 @@ public class JfresolveApiController : ControllerBase
             Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
         }
         
-        // Copy Content-Range header if present (for 206 Partial Content responses)
-        // Content-Range can be in response headers or content headers depending on the server
-        string? contentRangeValue = null;
-        if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
-        {
-            contentRangeValue = responseContentRange.FirstOrDefault();
-        }
-        else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
-        {
-            contentRangeValue = contentContentRange.FirstOrDefault();
-        }
-        
-        if (!string.IsNullOrEmpty(contentRangeValue))
-        {
-            Response.Headers["Content-Range"] = contentRangeValue;
-        }
-        
         // Copy Accept-Ranges header to indicate we support range requests
         Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
         
-        // Only set Content-Length for range requests (206 Partial Content) where we know the exact range size
-        // For full requests (200 OK), don't set Content-Length to avoid mismatch errors if connection resets
+        // For 200 OK (when not implementing workaround), don't set Content-Length to avoid mismatch errors if connection resets
         // This allows graceful handling of connection resets without "Content-Length mismatch" errors
-        if (streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
-            streamResponse.Content.Headers.ContentLength.HasValue)
-        {
-            // For 206 Partial Content, Content-Length represents the range size, which is safe to set
-            Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
-        }
-        // For 200 OK or other statuses, don't set Content-Length - let it stream without fixed length
-        // This prevents "Content-Length mismatch" errors when connections are reset mid-stream
     }
 
     /// <summary>
     /// Streams content from the HTTP response to the client response body
     /// </summary>
-    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id)
+    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id, long? rangeStart)
     {
         // Optimized streaming: Use larger buffer and flush less frequently for better throughput
         // Larger buffer reduces overhead from frequent system calls
@@ -573,12 +620,38 @@ public class JfresolveApiController : ControllerBase
         var buffer = new byte[bufferSize];
         int bufferCount = 0;
         
+        // Workaround for servers that don't support range requests
+        // If client requested a range but server returned 200 OK, skip bytes ourselves
+        bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
+        bool needToSkipBytes = rangeStart.HasValue && !upstreamSupportsRange;
+        long bytesToSkip = needToSkipBytes && rangeStart.HasValue ? rangeStart.Value : 0;
+        long bytesSkipped = 0;
+        
         // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
         // The stream must be fully read before HttpResponseMessage disposal completes
         using (var stream = await streamResponse.Content.ReadAsStreamAsync())
         {
             try
             {
+                // Skip bytes if upstream doesn't support range requests
+                if (needToSkipBytes)
+                {
+                    while (bytesSkipped < bytesToSkip)
+                    {
+                        var remaining = bytesToSkip - bytesSkipped;
+                        var skipBufferSize = (int)Math.Min(bufferSize, remaining);
+                        var skipped = await stream.ReadAsync(buffer, 0, skipBufferSize);
+                        if (skipped == 0)
+                        {
+                            // Reached end of stream before skipping enough bytes
+                            _logger.LogWarning("Jfresolve: Reached end of stream while skipping bytes (requested: {Requested}, skipped: {Skipped})", bytesToSkip, bytesSkipped);
+                            break;
+                        }
+                        bytesSkipped += skipped;
+                    }
+                    _logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
+                }
+                
                 int bytesRead;
                 while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
                 {
@@ -1074,5 +1147,33 @@ public class JfresolveApiController : ControllerBase
         }
 
         return currentResponse;
+    }
+
+    /// <summary>
+    /// Parses the Range header to extract the start byte position
+    /// Supports formats like "bytes=123-", "bytes=123-456", "bytes=-456"
+    /// </summary>
+    private static long? ParseRangeStart(string rangeHeader)
+    {
+        if (string.IsNullOrWhiteSpace(rangeHeader))
+            return null;
+
+        // Range header format: "bytes=start-end" or "bytes=start-" or "bytes=-end"
+        if (!rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
+            return null;
+
+        var rangeValue = rangeHeader.Substring(6).Trim(); // Remove "bytes="
+        var parts = rangeValue.Split('-');
+        
+        if (parts.Length != 2)
+            return null;
+
+        // If start is specified, parse it
+        if (!string.IsNullOrWhiteSpace(parts[0]) && long.TryParse(parts[0], out var start))
+        {
+            return start;
+        }
+
+        return null;
     }
 }

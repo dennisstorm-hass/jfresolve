@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.21",
+        "changelog": "Fixed pause/resume playback: Implemented workaround for upstream servers that don't support HTTP Range requests. When FFmpeg requests a range (e.g., bytes=1057350-) but the upstream server returns 200 OK with the full file, the plugin now automatically skips the initial bytes and returns 206 Partial Content with proper Content-Range headers to FFmpeg. This allows seamless pause/resume functionality even when the upstream server (Real-Debrid/Stremio) doesn't support range requests. The workaround is transparent to users and doesn't affect normal playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.21/jfresolve.zip",
+        "checksum": "a883b15586c8601744eb4e96ffb0036d",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T13:36:49Z"
+      },
+      {
         "version": "1.0.0.20",
         "changelog": "Performance optimizations: Optimized TMDB API calls with parallel fetching and caching - IMDB IDs are now fetched in parallel (up to 5 concurrent requests) with a 24-hour cache, reducing search time from 10+ seconds to 2-3 seconds for 10 results. Added stream metadata caching - Stremio addon responses are cached for 10 minutes, reducing redundant API calls when multiple users request the same content. Added folder lookup caching - folder references are cached for 1 hour, eliminating redundant database queries for repeated folder lookups. All caches include automatic cleanup and size limits.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.20/jfresolve.zip",
