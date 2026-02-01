@@ -222,26 +222,39 @@ public class JfresolveApiController : ControllerBase
                 
                 // Stream the content directly to the response
                 // HttpResponseMessage must be disposed to prevent resource leaks
-                using var streamResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
-                streamResponse.EnsureSuccessStatusCode();
+                var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+                
+                // Handle redirects (302, 301, etc.) - follow up to 5 redirects
+                // FollowRedirectsAsync will dispose initialResponse if redirects are followed
+                var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5);
+                if (streamResponse == null)
+                {
+                    initialResponse.Dispose(); // Dispose if redirects failed
+                    _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
+                    return StatusCode(502, "Failed to resolve stream URL after redirects");
+                }
+                
+                // Use the final response (after following redirects)
+                using var finalStreamResponse = streamResponse;
+                finalStreamResponse.EnsureSuccessStatusCode();
 
                 // Copy status code (206 for partial content if range was requested)
-                Response.StatusCode = (int)streamResponse.StatusCode;
+                Response.StatusCode = (int)finalStreamResponse.StatusCode;
 
                 // Copy headers that might be important for streaming
-                if (streamResponse.Content.Headers.ContentType != null)
+                if (finalStreamResponse.Content.Headers.ContentType != null)
                 {
-                    Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
+                    Response.ContentType = finalStreamResponse.Content.Headers.ContentType.ToString();
                 }
                 
                 // Copy Content-Range header if present (for 206 Partial Content responses)
                 // Content-Range can be in response headers or content headers depending on the server
                 string? contentRangeValue = null;
-                if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
+                if (finalStreamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
                 {
                     contentRangeValue = responseContentRange.FirstOrDefault();
                 }
-                else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
+                else if (finalStreamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
                 {
                     contentRangeValue = contentContentRange.FirstOrDefault();
                 }
@@ -254,9 +267,9 @@ public class JfresolveApiController : ControllerBase
                 // Copy Accept-Ranges header to indicate we support range requests
                 Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
                 
-                if (streamResponse.Content.Headers.ContentLength.HasValue)
+                if (finalStreamResponse.Content.Headers.ContentLength.HasValue)
                 {
-                    Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+                    Response.ContentLength = finalStreamResponse.Content.Headers.ContentLength.Value;
                 }
 
                 // Optimized streaming: Use larger buffer and flush less frequently for better throughput
@@ -269,7 +282,7 @@ public class JfresolveApiController : ControllerBase
                 
                 // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
                 // The stream must be fully read before HttpResponseMessage disposal completes
-                using (var stream = await streamResponse.Content.ReadAsStreamAsync())
+                using (var stream = await finalStreamResponse.Content.ReadAsStreamAsync())
                 {
                     try
                     {
@@ -900,5 +913,105 @@ public class JfresolveApiController : ControllerBase
         }
 
         return false;
+    }
+
+    /// <summary>
+    /// Follows HTTP redirects (302, 301, etc.) up to a maximum number of redirects
+    /// </summary>
+    private async Task<HttpResponseMessage?> FollowRedirectsAsync(
+        HttpClient httpClient,
+        HttpResponseMessage response,
+        string originalUrl,
+        int maxRedirects)
+    {
+        var currentResponse = response;
+        var redirectCount = 0;
+
+        while (redirectCount < maxRedirects && 
+               (currentResponse.StatusCode == System.Net.HttpStatusCode.MovedPermanently ||
+                currentResponse.StatusCode == System.Net.HttpStatusCode.Found ||
+                currentResponse.StatusCode == System.Net.HttpStatusCode.SeeOther ||
+                currentResponse.StatusCode == System.Net.HttpStatusCode.TemporaryRedirect ||
+                currentResponse.StatusCode == System.Net.HttpStatusCode.PermanentRedirect))
+        {
+            // Get the redirect location
+            var location = currentResponse.Headers.Location?.ToString() ?? 
+                          currentResponse.Headers.GetValues("Location").FirstOrDefault();
+
+            if (string.IsNullOrWhiteSpace(location))
+            {
+                _logger.LogWarning("Jfresolve: Redirect response has no Location header");
+                if (currentResponse != response)
+                {
+                    currentResponse.Dispose();
+                }
+                return null;
+            }
+
+            // Handle relative URLs
+            if (!Uri.TryCreate(location, UriKind.Absolute, out var redirectUri))
+            {
+                if (Uri.TryCreate(new Uri(originalUrl), location, out redirectUri))
+                {
+                    location = redirectUri.ToString();
+                }
+                else
+                {
+                    _logger.LogWarning("Jfresolve: Invalid redirect location: {Location}", location);
+                    if (currentResponse != response)
+                    {
+                        currentResponse.Dispose();
+                    }
+                    return null;
+                }
+            }
+
+            // Validate redirect URL to prevent SSRF
+            if (!IsValidStreamUrl(location))
+            {
+                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {Location}", location);
+                if (currentResponse != response)
+                {
+                    currentResponse.Dispose();
+                }
+                return null;
+            }
+
+            redirectCount++;
+            _logger.LogDebug("Jfresolve: Following redirect #{Count} to {Location}", redirectCount, location);
+
+            // Dispose previous response if it's not the original
+            if (currentResponse != response)
+            {
+                currentResponse.Dispose();
+            }
+
+            // Create new request for redirect
+            var redirectRequest = new HttpRequestMessage(HttpMethod.Get, location);
+            
+            // Preserve Range header from original request if present
+            // Note: We need to get this from the original request context
+            // For now, we'll preserve it from the current HTTP context
+            if (Request.Headers.ContainsKey("Range"))
+            {
+                var rangeHeader = Request.Headers["Range"].ToString();
+                if (!string.IsNullOrEmpty(rangeHeader))
+                {
+                    redirectRequest.Headers.Add("Range", rangeHeader);
+                }
+            }
+
+            // Follow the redirect
+            currentResponse = await httpClient.SendAsync(redirectRequest, HttpCompletionOption.ResponseHeadersRead);
+        }
+
+        // If we followed redirects, dispose the original response
+        // If no redirects were followed, currentResponse == response and caller will dispose it
+        if (currentResponse != response && redirectCount > 0)
+        {
+            response.Dispose();
+        }
+
+        return currentResponse;
     }
 }

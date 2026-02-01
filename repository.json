@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.16",
+        "changelog": "Fixed HTTP 302 redirect handling: Added proper redirect following for stream URLs that return 302 responses (common with Real-Debrid and similar services). The plugin now follows up to 5 redirects while preserving Range headers and validating redirect URLs for security. This fixes streaming errors when addon URLs redirect to the actual stream location.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.16/jfresolve.zip",
+        "checksum": "21275da929754bb2f1be526288410462",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-01T12:20:48Z"
+      },
+      {
         "version": "1.0.0.15",
         "changelog": "Fixed connection reset handling during streaming: Added graceful handling for connection resets when clients pause/disconnect. Prevents 'StatusCode cannot be set because the response has already started' errors. Playback can now resume seamlessly after pauses. Also includes high-priority improvements: extracted magic numbers to constants, fixed memory leaks in failover cache, added input validation and SSRF protection, improved HttpClient configuration with named clients, and added retry logic for TMDB API calls.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.15/jfresolve.zip",
