@@ -12,7 +12,7 @@ public static class Constants
 
     // HTTP client timeouts
     public const int AddonRequestTimeoutSeconds = 30; // Timeout for Stremio addon requests
-    public const int StreamRequestTimeoutMinutes = 10; // Timeout for streaming requests
+    public const int StreamRequestTimeoutHours = 4; // Timeout for streaming requests (4 hours to handle long movies/episodes)
 
     // Cache configuration
     public const int MaxMetadataCacheSize = 500; // Maximum metadata cache entries

@@ -7,6 +7,7 @@ using System.Net.Http;
 using System.Net.Sockets;
 using System.Reflection;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 using Jfresolve.Services;
 using Microsoft.AspNetCore.Authorization;
@@ -442,7 +443,9 @@ public class JfresolveApiController : ControllerBase
             Response.Headers["Expires"] = Constants.ExpiresZero;
             
             var streamHttpClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
-            streamHttpClient.Timeout = TimeSpan.FromMinutes(Constants.StreamRequestTimeoutMinutes);
+            // Use a very long timeout (4 hours) to handle long movies/episodes without interruption
+            // The timeout applies to the entire operation including all read operations
+            streamHttpClient.Timeout = TimeSpan.FromHours(Constants.StreamRequestTimeoutHours);
             
             // Handle HTTP Range requests for seeking (required by FFmpeg)
             var rangeHeader = Request.Headers["Range"].ToString();
@@ -463,12 +466,16 @@ public class JfresolveApiController : ControllerBase
             }
             
             // Stream the content directly to the response
+            // Use RequestAborted cancellation token so upstream request is cancelled when client disconnects
+            // This ensures immediate cleanup when user stops playback
+            var cancellationToken = HttpContext.RequestAborted;
+            
             // HttpResponseMessage must be disposed to prevent resource leaks
-            var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+            var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             
             // Handle redirects (302, 301, etc.) - follow up to 5 redirects
             // FollowRedirectsAsync will dispose initialResponse if redirects are followed
-            var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5);
+            var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, cancellationToken);
             if (streamResponse == null)
             {
                 initialResponse.Dispose(); // Dispose if redirects failed
@@ -484,7 +491,8 @@ public class JfresolveApiController : ControllerBase
             CopyStreamResponseHeaders(finalStreamResponse, rangeHeader, rangeStart);
 
             // Stream the content (with workaround for servers that don't support range requests)
-            await StreamContentAsync(finalStreamResponse, type, id, rangeStart);
+            // Pass cancellation token so streaming stops immediately when client disconnects
+            await StreamContentAsync(finalStreamResponse, type, id, rangeStart, cancellationToken);
             
             return new EmptyResult();
         }
@@ -610,7 +618,7 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Streams content from the HTTP response to the client response body
     /// </summary>
-    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id, long? rangeStart)
+    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id, long? rangeStart, CancellationToken cancellationToken = default)
     {
         // Optimized streaming: Use larger buffer and flush less frequently for better throughput
         // Larger buffer reduces overhead from frequent system calls
@@ -636,11 +644,11 @@ public class JfresolveApiController : ControllerBase
                 // Skip bytes if upstream doesn't support range requests
                 if (needToSkipBytes)
                 {
-                    while (bytesSkipped < bytesToSkip)
+                    while (bytesSkipped < bytesToSkip && !cancellationToken.IsCancellationRequested)
                     {
                         var remaining = bytesToSkip - bytesSkipped;
                         var skipBufferSize = (int)Math.Min(bufferSize, remaining);
-                        var skipped = await stream.ReadAsync(buffer, 0, skipBufferSize);
+                        var skipped = await stream.ReadAsync(buffer, 0, skipBufferSize, cancellationToken);
                         if (skipped == 0)
                         {
                             // Reached end of stream before skipping enough bytes
@@ -653,21 +661,71 @@ public class JfresolveApiController : ControllerBase
                 }
                 
                 int bytesRead;
-                while ((bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length)) > 0)
+                while (!cancellationToken.IsCancellationRequested && 
+                       (bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
                 {
-                    await Response.Body.WriteAsync(buffer, 0, bytesRead);
+                    await Response.Body.WriteAsync(buffer, 0, bytesRead, cancellationToken);
                     bufferCount++;
                     
                     // Flush periodically to reduce overhead while maintaining low latency
                     // Flush immediately on first buffer for quick start, then every N buffers
                     if (bufferCount == 1 || bufferCount % flushInterval == 0)
                     {
-                        await Response.Body.FlushAsync();
+                        await Response.Body.FlushAsync(cancellationToken);
                     }
                 }
                 
-                // Final flush to ensure all data is sent
-                await Response.Body.FlushAsync();
+                // Final flush to ensure all data is sent (if not cancelled)
+                if (!cancellationToken.IsCancellationRequested)
+                {
+                    await Response.Body.FlushAsync(cancellationToken);
+                }
+            }
+            catch (OperationCanceledException oce) when (oce.CancellationToken.IsCancellationRequested)
+            {
+                // Client disconnected (RequestAborted) - this is normal when user stops playback
+                // Log and exit gracefully - no need to throw or return error
+                _logger.LogInformation(
+                    "Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes",
+                    type, id, bufferCount * bufferSize);
+                // Don't throw - just exit, connection will close naturally
+            }
+            catch (TaskCanceledException tce) when (tce.InnerException is TimeoutException || tce.InnerException == null)
+            {
+                // HttpClient timeout during streaming - HttpClient throws TaskCanceledException on timeout
+                // This can happen if there's a long pause in data transfer (buffering, network hiccup)
+                // Log the timeout but don't treat it as a fatal error if response has started
+                if (Response.HasStarted)
+                {
+                    _logger.LogWarning(
+                        tce,
+                        "Jfresolve: HttpClient timeout during streaming for {Type}/{Id} after ~{Bytes} bytes (likely due to network pause or buffering). Connection may have been idle too long.",
+                        type, id, bufferCount * bufferSize);
+                }
+                else
+                {
+                    _logger.LogError(
+                        tce,
+                        "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}",
+                        type, id);
+                    throw; // Re-throw if response hasn't started yet
+                }
+            }
+            catch (TimeoutException te)
+            {
+                // Direct timeout exception (less common with HttpClient)
+                if (Response.HasStarted)
+                {
+                    _logger.LogWarning(
+                        te,
+                        "Jfresolve: Timeout during streaming for {Type}/{Id} after ~{Bytes} bytes",
+                        type, id, bufferCount * bufferSize);
+                }
+                else
+                {
+                    _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id);
+                    throw;
+                }
             }
             catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
                                              (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
@@ -1056,7 +1114,8 @@ public class JfresolveApiController : ControllerBase
         HttpClient httpClient,
         HttpResponseMessage response,
         string originalUrl,
-        int maxRedirects)
+        int maxRedirects,
+        CancellationToken cancellationToken = default)
     {
         var currentResponse = response;
         var redirectCount = 0;
@@ -1135,8 +1194,8 @@ public class JfresolveApiController : ControllerBase
                 }
             }
 
-            // Follow the redirect
-            currentResponse = await httpClient.SendAsync(redirectRequest, HttpCompletionOption.ResponseHeadersRead);
+            // Follow the redirect (with cancellation token to stop immediately if client disconnects)
+            currentResponse = await httpClient.SendAsync(redirectRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         }
 
         // If we followed redirects, dispose the original response

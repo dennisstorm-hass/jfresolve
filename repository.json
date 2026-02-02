@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.22",
+        "changelog": "Fixed 15-minute playback timeout: Increased HttpClient timeout from 10 minutes to 4 hours to support long movies/episodes without interruption. Added immediate cancellation support - when client stops playback, the plugin now immediately cancels upstream requests using HttpContext.RequestAborted, ensuring connections close instantly instead of waiting for timeout. Improved connection cleanup and exception handling for client disconnects. Movies over 2 hours now play seamlessly without stopping every 15 minutes.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.22/jfresolve.zip",
+        "checksum": "5b6b9e09f1a8e722346e54b39cb947fb",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-02T18:59:10Z"
+      },
+      {
         "version": "1.0.0.21",
         "changelog": "Fixed pause/resume playback: Implemented workaround for upstream servers that don't support HTTP Range requests. When FFmpeg requests a range (e.g., bytes=1057350-) but the upstream server returns 200 OK with the full file, the plugin now automatically skips the initial bytes and returns 206 Partial Content with proper Content-Range headers to FFmpeg. This allows seamless pause/resume functionality even when the upstream server (Real-Debrid/Stremio) doesn't support range requests. The workaround is transparent to users and doesn't affect normal playback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.21/jfresolve.zip",

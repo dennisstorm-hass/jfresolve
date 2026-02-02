@@ -53,13 +53,14 @@ public class ServiceRegistrator : IPluginServiceRegistrator
             .SetHandlerLifetime(TimeSpan.FromMinutes(5));
 
         // Configure named HttpClient for streaming (long timeout, connection pooling)
+        // Handler lifetime set to 1 hour to support long playback sessions
         services.AddHttpClient("Jfresolve.Stream")
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
             {
                 MaxConnectionsPerServer = 20,
                 AllowAutoRedirect = false // We handle redirects manually
             })
-            .SetHandlerLifetime(TimeSpan.FromMinutes(10));
+            .SetHandlerLifetime(TimeSpan.FromHours(1));
         
         // Register HttpContextAccessor for accessing HTTP context in decorators (required for Jellyfin 10.11.6 compatibility)
         services.AddHttpContextAccessor();
