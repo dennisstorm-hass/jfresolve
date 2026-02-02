@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.24",
+        "changelog": "Preload subtitle information in UI: Added background probing when items are viewed in the Jellyfin interface to preload subtitle information before first playback. Subtitle streams are now available in the UI shortly after viewing an item, without waiting for first playback. Background probe runs asynchronously and doesn't block the UI. GetStaticMediaSources now uses streams from database to ensure subtitle information is immediately available when items are displayed.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.24/jfresolve.zip",
+        "checksum": "ee9e6853f259ef166323d6f5ddbb7c5d",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-02T21:46:49Z"
+      },
+      {
         "version": "1.0.0.23",
         "changelog": "Performance improvements: Pre-extract subtitle information before playback starts to prevent stream restarts when subtitles are changed during playback. Optimized resume performance - added resolved URL caching to skip redirect following on resume, reducing resume time from 30+ seconds to 2-5 seconds. Increased stream metadata cache duration from 10 minutes to 1 hour for better resume performance. Subtitle changes during playback no longer cause stuttering or stream restarts.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.23/jfresolve.zip",

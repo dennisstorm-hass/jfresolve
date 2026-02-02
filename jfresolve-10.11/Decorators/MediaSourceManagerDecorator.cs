@@ -289,8 +289,74 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             ApplyTrick(info);
         }
 
-        var primaryStreams = sources.Count > 0 ? sources[0].MediaStreams : new List<MediaStream>();
+        // Get streams from database to ensure subtitle information is available in UI
+        // This ensures subtitle streams are shown even before first playback
+        // If streams exist in database (from previous probing), use them
+        // Otherwise, streams will be populated when GetPlaybackMediaSources is called (async probing)
+        var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
+        var primaryStreams = dbStreams.Any() 
+            ? dbStreams 
+            : (sources.Count > 0 ? sources[0].MediaStreams?.ToList() ?? new List<MediaStream>() : new List<MediaStream>());
         var primaryContainer = sources.Count > 0 ? sources[0].Container : null;
+        
+        if (dbStreams.Any())
+        {
+            _log.LogDebug("Jfresolve: Using {Count} streams from database for {Name} (including {SubtitleCount} subtitles)", 
+                dbStreams.Count, item.Name, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle));
+        }
+        else if (sources.Count > 0 && sources[0] != null)
+        {
+            var source = sources[0];
+            // Check if this is a Jfresolve item that needs probing
+            if (!string.IsNullOrEmpty(source.Path) && source.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+            {
+                _log.LogDebug("Jfresolve: No streams in database for {Name}, triggering background probe for subtitle preload", item.Name);
+                
+                // Trigger background probe to preload subtitle information
+                // This ensures subtitles are available in UI before first playback
+                // Fire-and-forget: don't await, don't block UI
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        // Small delay to avoid blocking UI thread
+                        await Task.Delay(100);
+                        
+                        // Probe the item to extract stream information including subtitles
+                        var wasVirtual = item.IsVirtualItem;
+                        item.IsVirtualItem = false;
+                        
+                        try
+                        {
+                            await item.RefreshMetadata(
+                                new MetadataRefreshOptions(_directoryService)
+                                {
+                                    EnableRemoteContentProbe = true,
+                                    MetadataRefreshMode = MetadataRefreshMode.FullRefresh,
+                                },
+                                CancellationToken.None
+                            ).ConfigureAwait(false);
+                            
+                            await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                            
+                            var probedStreams = _inner.GetMediaStreams(item.Id);
+                            var subtitleCount = probedStreams.Count(s => s.Type == MediaStreamType.Subtitle);
+                            _log.LogInformation("Jfresolve: Background probe completed for {Name} - {SubtitleCount} subtitle stream(s) now available in UI", 
+                                item.Name, subtitleCount);
+                        }
+                        finally
+                        {
+                            item.IsVirtualItem = wasVirtual;
+                            await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        _log.LogWarning(ex, "Jfresolve: Background probe failed for {Name}, subtitles will be available after first playback", item.Name);
+                    }
+                });
+            }
+        }
 
         var query = new InternalItemsQuery
         {
@@ -376,7 +442,16 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     public void AddParts(IEnumerable<IMediaSourceProvider> providers) => _inner.AddParts(providers);
 
-    public IReadOnlyList<MediaStream> GetMediaStreams(Guid itemId) => _inner.GetMediaStreams(itemId);
+    public IReadOnlyList<MediaStream> GetMediaStreams(Guid itemId)
+    {
+        // Always return streams from database to ensure subtitle information is available in UI
+        // This ensures subtitle streams are shown even before first playback
+        var streams = _inner.GetMediaStreams(itemId);
+        
+        // If no streams in database, return empty list (streams will be populated after probing)
+        // Probing happens in GetPlaybackMediaSources when playback starts
+        return streams;
+    }
 
     public IReadOnlyList<MediaStream> GetMediaStreams(MediaStreamQuery query) => _inner.GetMediaStreams(query);
 
