@@ -37,6 +37,11 @@ public class JfresolveApiController : ControllerBase
     // Key: stream URL, Value: (Serialized JSON, ExpiryTime)
     private static readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
     private static DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
+    
+    // Resolved URL cache: caches final resolved stream URLs (after following redirects) to speed up resume
+    // Key: original redirect URL, Value: (Final URL after redirects, ExpiryTime)
+    private static readonly ConcurrentDictionary<string, (string FinalUrl, DateTime Expiry)> _resolvedUrlCache = new();
+    private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
         ILogger<JfresolveApiController> logger,
@@ -352,6 +357,49 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
+    /// Cleans up expired entries from the resolved URL cache
+    /// </summary>
+    private static void CleanupResolvedUrlCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Only run cleanup periodically to avoid performance impact
+        if (now - _lastResolvedUrlCacheCleanup < Constants.ResolvedUrlCacheCleanupInterval)
+        {
+            return;
+        }
+
+        _lastResolvedUrlCacheCleanup = now;
+        var keysToRemove = new List<string>();
+
+        // Remove expired entries
+        foreach (var kvp in _resolvedUrlCache)
+        {
+            if (kvp.Value.Expiry <= now)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _resolvedUrlCache.TryRemove(key, out _);
+        }
+
+        // If still too large, remove oldest entries
+        if (_resolvedUrlCache.Count > Constants.ResolvedUrlCacheMaxSize)
+        {
+            var entriesToRemove = _resolvedUrlCache.Count - Constants.ResolvedUrlCacheMaxSize;
+            var sortedByExpiry = _resolvedUrlCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
+            
+            foreach (var kvp in sortedByExpiry)
+            {
+                _resolvedUrlCache.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
+
+    /// <summary>
     /// Builds the stream URL for the addon based on content type
     /// </summary>
     private string BuildStreamUrl(string manifestBase, string type, string id, string? season, string? episode)
@@ -470,22 +518,60 @@ public class JfresolveApiController : ControllerBase
             // This ensures immediate cleanup when user stops playback
             var cancellationToken = HttpContext.RequestAborted;
             
-            // HttpResponseMessage must be disposed to prevent resource leaks
-            var initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            // Check cache for final resolved URL (after redirects) to speed up resume
+            string? finalUrl = null;
+            var now = DateTime.UtcNow;
+            CleanupResolvedUrlCacheIfNeeded();
             
-            // Handle redirects (302, 301, etc.) - follow up to 5 redirects
-            // FollowRedirectsAsync will dispose initialResponse if redirects are followed
-            var streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, cancellationToken);
-            if (streamResponse == null)
+            if (_resolvedUrlCache.TryGetValue(redirectUrl, out var cachedResolved) && cachedResolved.Expiry > now)
             {
-                initialResponse.Dispose(); // Dispose if redirects failed
-                _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
-                return StatusCode(502, "Failed to resolve stream URL after redirects");
+                finalUrl = cachedResolved.FinalUrl;
+                _logger.LogDebug("Jfresolve: Using cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
             }
             
-            // Use the final response (after following redirects)
+            HttpResponseMessage? streamResponse = null;
+            HttpResponseMessage? initialResponse = null;
+            
+            if (finalUrl != null)
+            {
+                // Use cached final URL - skip redirect following for faster resume
+                var cachedRequest = new HttpRequestMessage(HttpMethod.Get, finalUrl);
+                if (!string.IsNullOrEmpty(rangeHeader))
+                {
+                    cachedRequest.Headers.Add("Range", rangeHeader);
+                }
+                streamResponse = await streamHttpClient.SendAsync(cachedRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            }
+            else
+            {
+                // Follow redirects to get final URL (first time or cache expired)
+                initialResponse = await streamHttpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                
+                // Handle redirects (302, 301, etc.) - follow up to 5 redirects
+                // FollowRedirectsAsync will dispose initialResponse if redirects are followed
+                streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, cancellationToken);
+                if (streamResponse == null)
+                {
+                    initialResponse?.Dispose(); // Dispose if redirects failed
+                    _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
+                    return StatusCode(502, "Failed to resolve stream URL after redirects");
+                }
+                
+                // Cache the final resolved URL for faster resume
+                finalUrl = streamResponse.RequestMessage?.RequestUri?.ToString();
+                if (!string.IsNullOrEmpty(finalUrl) && finalUrl != redirectUrl)
+                {
+                    _resolvedUrlCache.TryAdd(redirectUrl, (finalUrl, now.Add(Constants.ResolvedUrlCacheExpiry)));
+                    _logger.LogDebug("Jfresolve: Cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
+                }
+            }
+            
+            // Use the final response (after following redirects or from cache)
             using var finalStreamResponse = streamResponse;
             finalStreamResponse.EnsureSuccessStatusCode();
+            
+            // Dispose initialResponse if it was created (not used when cache hit)
+            initialResponse?.Dispose();
 
             // Copy response headers
             CopyStreamResponseHeaders(finalStreamResponse, rangeHeader, rangeStart);

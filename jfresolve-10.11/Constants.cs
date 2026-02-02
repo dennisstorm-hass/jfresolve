@@ -56,8 +56,13 @@ public static class Constants
 
     // Stream metadata caching
     public const int StreamMetadataCacheMaxSize = 500; // Maximum cached stream metadata responses
-    public static readonly TimeSpan StreamMetadataCacheExpiry = TimeSpan.FromMinutes(10); // Cache stream metadata for 10 minutes
-    public static readonly TimeSpan StreamMetadataCacheCleanupInterval = TimeSpan.FromMinutes(30); // Cleanup every 30 minutes
+    public static readonly TimeSpan StreamMetadataCacheExpiry = TimeSpan.FromHours(1); // Cache stream metadata for 1 hour (increased for better resume performance)
+    public static readonly TimeSpan StreamMetadataCacheCleanupInterval = TimeSpan.FromHours(2); // Cleanup every 2 hours
+    
+    // Final resolved URL caching (after redirects) - speeds up resume significantly
+    public const int ResolvedUrlCacheMaxSize = 200; // Maximum cached resolved URLs
+    public static readonly TimeSpan ResolvedUrlCacheExpiry = TimeSpan.FromHours(2); // Cache resolved URLs for 2 hours
+    public static readonly TimeSpan ResolvedUrlCacheCleanupInterval = TimeSpan.FromHours(4); // Cleanup every 4 hours
 
     // Folder lookup caching
     public const int FolderCacheMaxSize = 100; // Maximum cached folder references

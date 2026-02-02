@@ -84,15 +84,41 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
 
         var primarySource = sources.FirstOrDefault();
-        if (primarySource != null && NeedsProbe(primarySource))
+        if (primarySource != null && NeedsProbe(primarySource, primaryItem))
         {
-            _log.LogInformation("Jfresolve: Probing primary item {Name}", primaryItem.Name);
+            _log.LogInformation("Jfresolve: Probing primary item {Name} to extract complete stream information (video, audio, subtitles)", primaryItem.Name);
             await ProbeItem(primaryItem, cancellationToken);
 
+            // Get sources again after probing to ensure we have complete stream information
             sources = (await _inner.GetPlaybackMediaSources(primaryItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
             foreach (var info in sources)
             {
                 ApplyTrick(info);
+            }
+            
+            // Ensure media info is complete by using AddMediaInfoWithProbe on the primary source
+            // This ensures subtitle information is available before playback starts, preventing stream restarts when subtitles are changed
+            if (primarySource != null && !string.IsNullOrEmpty(primarySource.Path) && 
+                primarySource.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+            {
+                try
+                {
+                    // Use the updated source from the list after probing
+                    var updatedSource = sources.FirstOrDefault();
+                    if (updatedSource != null)
+                    {
+                        await _inner.AddMediaInfoWithProbe(updatedSource, isAudio: false, cacheKey: null, addProbeDelay: false, isLiveStream: false, cancellationToken);
+                        
+                        // Verify subtitle streams are now available
+                        var finalStreams = _inner.GetMediaStreams(primaryItem.Id);
+                        var subtitleCount = finalStreams.Count(s => s.Type == MediaStreamType.Subtitle);
+                        _log.LogInformation("Jfresolve: Added complete media info for {Name} - {SubtitleCount} subtitle stream(s) available", primaryItem.Name, subtitleCount);
+                    }
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Jfresolve: Failed to add media info with probe for {Name}, continuing anyway", primaryItem.Name);
+                }
             }
         }
 
@@ -116,9 +142,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             var virtualSources = (await _inner.GetPlaybackMediaSources(virtualItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
             var virtualSource = virtualSources.FirstOrDefault();
 
-            if (virtualSource != null && NeedsProbe(virtualSource))
+            if (virtualSource != null && NeedsProbe(virtualSource, virtualItem))
             {
-                _log.LogInformation("Jfresolve: Probing virtual item {Name}", virtualItem.Name);
+                _log.LogInformation("Jfresolve: Probing virtual item {Name} to extract complete stream information (video, audio, subtitles)", virtualItem.Name);
                 await ProbeItem(virtualItem, cancellationToken);
             }
 
@@ -168,15 +194,37 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     /// <summary>
     /// Check if a media source needs to be probed
+    /// Probes if video streams are missing, runtime is too short, or if we haven't probed for all stream types yet
+    /// This ensures subtitle information is available before playback starts, preventing stream restarts when subtitles are changed
     /// </summary>
-    private bool NeedsProbe(MediaSourceInfo source)
+    private bool NeedsProbe(MediaSourceInfo source, BaseItem item)
     {
         if (source == null) return false;
 
-        var noVideoStreams = source.MediaStreams?.All(ms => ms.Type != MediaStreamType.Video) ?? true;
+        var streams = source.MediaStreams ?? new List<MediaStream>();
+        var hasVideoStreams = streams.Any(ms => ms.Type == MediaStreamType.Video);
+        var noVideoStreams = !hasVideoStreams;
         var runtimeTooShort = (source.RunTimeTicks ?? 0) < TimeSpan.FromMinutes(2).Ticks;
+        
+        // Check if we have stream information from the database
+        // If item has no media streams in database, we need to probe to get complete info (including subtitles)
+        // This ensures subtitle information is available before playback starts, preventing stream restarts when subtitles are changed
+        var dbStreams = _inner.GetMediaStreams(item.Id);
+        var hasDbStreams = dbStreams.Any();
+        
+        // If we have video streams in the source but no database streams, we should probe
+        // This means we haven't probed this item yet and don't have complete stream information (including subtitles)
+        var needsProbeForCompleteInfo = hasVideoStreams && !hasDbStreams;
 
-        return noVideoStreams || runtimeTooShort;
+        var needsProbe = noVideoStreams || runtimeTooShort || needsProbeForCompleteInfo;
+        
+        if (needsProbe)
+        {
+            _log.LogDebug("Jfresolve: NeedsProbe=true for {Name} - NoVideoStreams: {NoVideo}, RuntimeTooShort: {Runtime}, NeedsProbeForCompleteInfo: {Complete}",
+                item.Name, noVideoStreams, runtimeTooShort, needsProbeForCompleteInfo);
+        }
+
+        return needsProbe;
     }
 
     /// <summary>
@@ -204,14 +252,18 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
             var streams = _inner.GetMediaStreams(item.Id);
             var videoStream = streams.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+            var audioStreams = streams.Where(s => s.Type == MediaStreamType.Audio).ToList();
+            var subtitleStreams = streams.Where(s => s.Type == MediaStreamType.Subtitle).ToList();
+            
             if (videoStream != null)
             {
-                _log.LogInformation("Jfresolve: Probed {Name} - Codec: {Codec}, Width: {Width}, Height: {Height}",
-                    item.Name, videoStream.Codec, videoStream.Width, videoStream.Height);
+                _log.LogInformation("Jfresolve: Probed {Name} - Codec: {Codec}, Width: {Width}, Height: {Height}, Audio streams: {AudioCount}, Subtitle streams: {SubtitleCount}",
+                    item.Name, videoStream.Codec, videoStream.Width, videoStream.Height, audioStreams.Count, subtitleStreams.Count);
             }
             else
             {
-                _log.LogWarning("Jfresolve: Probed {Name} but NO video stream found!", item.Name);
+                _log.LogWarning("Jfresolve: Probed {Name} but NO video stream found! Audio streams: {AudioCount}, Subtitle streams: {SubtitleCount}",
+                    item.Name, audioStreams.Count, subtitleStreams.Count);
             }
         }
         finally
