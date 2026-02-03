@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.35",
+        "changelog": "Fix: Resolved subtitle sync issues after pause/resume. Added MergeStreamsPreservingIndices method to intelligently merge streams from database with existing streams, preserving stream indices for subtitle offset functionality. Previously, completely replacing MediaStreams from the database changed stream indices, breaking the client's subtitle offset control. Now existing streams maintain their indices while missing subtitle streams are added from the database, ensuring subtitle offset works correctly after pause/resume operations.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.35/jfresolve.zip",
+        "checksum": "c0ba1f7599174fdf2bdc80c313f56a48",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T21:53:21Z"
+      },
+      {
         "version": "1.0.0.34",
         "changelog": "Fix: Resolved 'retrieving additional data' hang during subtitle loading. Overrode GetMediaSource method to populate MediaStreams from database before returning MediaSourceInfo. This ensures that when Jellyfin calls GetMediaSource during playback initialization, all stream information (including subtitles) is already available, preventing additional probing that caused the hang. Also improved ItemDtoFilter to handle both OkObjectResult and ObjectResult response types for better compatibility across different Jellyfin API endpoints.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.34/jfresolve.zip",

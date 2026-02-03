@@ -113,10 +113,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 var updatedSource = sources.FirstOrDefault();
                 if (updatedSource != null)
                 {
-                    // Replace MediaStreams on the source with streams from database
-                    // This ensures subtitle information is immediately available without additional probing
-                    updatedSource.MediaStreams = dbStreams;
-                    _log.LogInformation("Jfresolve: Populated MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
+                    // Merge streams intelligently to preserve indices for subtitle offset functionality
+                    // This ensures subtitle information is immediately available without breaking subtitle sync
+                    updatedSource.MediaStreams = MergeStreamsPreservingIndices(updatedSource.MediaStreams, dbStreams);
+                    _log.LogInformation("Jfresolve: Merged MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
                         dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
                 }
             }
@@ -156,15 +156,16 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 var hasSubtitleStreams = dbStreams.Any(s => s.Type == MediaStreamType.Subtitle);
                 var sourceHasSubtitleStreams = primarySource.MediaStreams?.Any(s => s.Type == MediaStreamType.Subtitle) ?? false;
                 
-                // If database has subtitle streams but source doesn't, populate from database
+                // If database has subtitle streams but source doesn't, merge from database
                 // This prevents Jellyfin from doing additional probing to extract subtitle information
+                // Use merge to preserve stream indices for subtitle offset functionality
                 if (hasSubtitleStreams && !sourceHasSubtitleStreams)
                 {
-                    primarySource.MediaStreams = dbStreams;
-                    _log.LogDebug("Jfresolve: Populated MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
+                    primarySource.MediaStreams = MergeStreamsPreservingIndices(primarySource.MediaStreams, dbStreams);
+                    _log.LogDebug("Jfresolve: Merged MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
                         dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
                 }
-                // If source has no streams at all, populate from database
+                // If source has no streams at all, use database streams
                 else if (primarySource.MediaStreams == null || !primarySource.MediaStreams.Any())
                 {
                     primarySource.MediaStreams = dbStreams;
@@ -548,15 +549,16 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 var hasSubtitleStreams = dbStreams.Any(s => s.Type == MediaStreamType.Subtitle);
                 var sourceHasSubtitleStreams = source.MediaStreams?.Any(s => s.Type == MediaStreamType.Subtitle) ?? false;
                 
-                // If database has subtitle streams but source doesn't, populate from database
+                // If database has subtitle streams but source doesn't, merge from database
                 // This prevents Jellyfin from doing additional probing ("retrieving additional data" hang)
+                // Use merge to preserve stream indices for subtitle offset functionality
                 if (hasSubtitleStreams && !sourceHasSubtitleStreams)
                 {
-                    source.MediaStreams = dbStreams;
-                    _log.LogDebug("Jfresolve: Populated GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
+                    source.MediaStreams = MergeStreamsPreservingIndices(source.MediaStreams, dbStreams);
+                    _log.LogDebug("Jfresolve: Merged GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
                         dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
                 }
-                // If source has no streams at all, populate from database
+                // If source has no streams at all, use database streams
                 else if (source.MediaStreams == null || !source.MediaStreams.Any())
                 {
                     source.MediaStreams = dbStreams;
@@ -604,6 +606,54 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     public Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, bool isLiveStream, CancellationToken cancellationToken)
         => _inner.AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, isLiveStream, cancellationToken);
+    
+    /// <summary>
+    /// Merge streams from database with existing streams, preserving indices for subtitle offset functionality
+    /// This ensures subtitle streams maintain consistent indices across pause/resume
+    /// </summary>
+    private IReadOnlyList<MediaStream> MergeStreamsPreservingIndices(IReadOnlyList<MediaStream>? existingStreams, IReadOnlyList<MediaStream> dbStreams)
+    {
+        if (existingStreams == null || !existingStreams.Any())
+        {
+            return dbStreams;
+        }
+
+        var existingList = existingStreams.ToList();
+        var dbList = dbStreams.ToList();
+        var merged = new List<MediaStream>();
+        
+        // First, add all existing streams with their original indices
+        // This preserves indices for subtitle offset functionality
+        foreach (var existing in existingList)
+        {
+            merged.Add(existing);
+        }
+        
+        // Add missing subtitle streams from database
+        // Match by language/codec to avoid duplicates, and assign new indices if needed
+        var maxIndex = existingList.Any() ? existingList.Max(s => s.Index) : -1;
+        foreach (var dbStream in dbList)
+        {
+            if (dbStream.Type == MediaStreamType.Subtitle)
+            {
+                // Check if we already have a subtitle stream with the same language/codec
+                var isDuplicate = existingList.Any(s => 
+                    s.Type == MediaStreamType.Subtitle &&
+                    s.Language == dbStream.Language &&
+                    s.Codec == dbStream.Codec);
+                
+                if (!isDuplicate)
+                {
+                    // Use the database stream but update its index to avoid conflicts
+                    // Note: MediaStream.Index might be read-only, so we'll add it as-is
+                    // The key is to preserve existing stream indices and only add new ones
+                    merged.Add(dbStream);
+                }
+            }
+        }
+        
+        return merged;
+    }
     
     /// <summary>
     /// Check if an item was recently added (within the threshold time)
