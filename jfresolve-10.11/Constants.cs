@@ -88,4 +88,10 @@ public static class Constants
     public const int CircuitBreakerFailureThreshold = 5; // Open circuit after 5 consecutive failures
     public static readonly TimeSpan CircuitBreakerOpenDuration = TimeSpan.FromMinutes(1); // Keep circuit open for 1 minute
     public static readonly TimeSpan CircuitBreakerHalfOpenTimeout = TimeSpan.FromSeconds(30); // Timeout for half-open test
+    
+    // HttpClient configuration
+    public const int AddonHttpClientMaxConnectionsPerServer = 10; // Max connections for addon requests
+    public static readonly TimeSpan AddonHttpClientHandlerLifetime = TimeSpan.FromMinutes(5); // Handler lifetime for addon client
+    public const int StreamHttpClientMaxConnectionsPerServer = 20; // Max connections for streaming requests
+    public static readonly TimeSpan StreamHttpClientHandlerLifetime = TimeSpan.FromHours(1); // Handler lifetime for stream client (supports long playback sessions)
 }

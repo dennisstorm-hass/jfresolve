@@ -99,62 +99,20 @@ public class JfresolveApiController : ControllerBase
             return Unauthorized("Unauthorized: Request must come from localhost or authenticated Jellyfin client");
         }
 
-        // Input validation and sanitization
-        if (string.IsNullOrWhiteSpace(type))
+        // Validate and sanitize inputs
+        var validationResult = ValidateAndSanitizeResolveStreamInputs(type, id, season, episode, quality, index);
+        if (validationResult.ErrorResult != null)
         {
-            _logger.LogWarning("Jfresolve: Invalid request - type parameter is empty");
-            return BadRequest("Type parameter is required");
+            return validationResult.ErrorResult;
         }
 
-        if (string.IsNullOrWhiteSpace(id))
-        {
-            _logger.LogWarning("Jfresolve: Invalid request - id parameter is empty");
-            return BadRequest("Id parameter is required");
-        }
-
-        // Sanitize inputs - remove any potentially dangerous characters
-        type = SanitizeInput(type);
-        id = SanitizeInput(id);
-        season = string.IsNullOrWhiteSpace(season) ? null : SanitizeInput(season);
-        episode = string.IsNullOrWhiteSpace(episode) ? null : SanitizeInput(episode);
-        quality = string.IsNullOrWhiteSpace(quality) ? null : SanitizeInput(quality);
-
-        // Validate type is one of the allowed values
-        if (!type.Equals("movie", StringComparison.OrdinalIgnoreCase) && 
-            !type.Equals("series", StringComparison.OrdinalIgnoreCase))
-        {
-            _logger.LogWarning("Jfresolve: Invalid request - unsupported type: {Type}", type);
-            return BadRequest("Type must be 'movie' or 'series'");
-        }
-
-        // Validate IMDB ID format
-        if (!IsValidImdbId(id))
-        {
-            _logger.LogWarning("Jfresolve: Invalid request - invalid IMDB ID format: {Id}", id);
-            return BadRequest("Invalid IMDB ID format. Expected format: tt1234567");
-        }
-
-        // Validate season and episode for series
-        if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(season) || !IsValidSeasonOrEpisode(season))
-            {
-                _logger.LogWarning("Jfresolve: Invalid request - invalid season: {Season}", season);
-                return BadRequest("Season must be a positive number between 1 and 999");
-            }
-            if (string.IsNullOrWhiteSpace(episode) || !IsValidSeasonOrEpisode(episode))
-            {
-                _logger.LogWarning("Jfresolve: Invalid request - invalid episode: {Episode}", episode);
-                return BadRequest("Episode must be a positive number between 1 and 999");
-            }
-        }
-
-        // Validate index is within reasonable bounds
-        if (index.HasValue && (index.Value < 0 || index.Value > 100))
-        {
-            _logger.LogWarning("Jfresolve: Invalid request - index out of bounds: {Index}", index.Value);
-            return BadRequest("Index must be between 0 and 100");
-        }
+        // Use sanitized values
+        type = validationResult.Type!;
+        id = validationResult.Id!;
+        season = validationResult.Season;
+        episode = validationResult.Episode;
+        quality = validationResult.Quality;
+        index = validationResult.Index;
 
         _logger.LogInformation(
             "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
@@ -169,11 +127,6 @@ public class JfresolveApiController : ControllerBase
             return BadRequest("Plugin not initialized");
         }
 
-        _logger.LogInformation(
-            "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
-            type, id, season ?? "N/A", episode ?? "N/A"
-        );
-
         // Check if addon manifest URL is configured
         if (string.IsNullOrWhiteSpace(config.AddonManifestUrl))
         {
@@ -183,60 +136,8 @@ public class JfresolveApiController : ControllerBase
 
         try
         {
-            // Validate series parameters
-            if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
-            {
-                if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
-                {
-                    return BadRequest("Season and episode parameters are required for series type");
-                }
-            }
-
-            // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
-            string? redirectUrl = null;
-            var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index);
-            var now = DateTime.UtcNow;
-            CleanupRedirectUrlCacheIfNeeded();
-            
-            if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
-            {
-                redirectUrl = cachedRedirect.RedirectUrl;
-                _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
-                    type, id, season ?? "N/A", episode ?? "N/A");
-            }
-            else
-            {
-                // Get streams from addon (returns JsonDocument that must be kept alive)
-                JsonDocument? streamsDoc = null;
-                try
-                {
-                    streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
-                    if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
-                    {
-                        _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
-                        return NotFound($"No streams found for {id}");
-                    }
-
-                    // Select stream using quality selector and failover logic with immediate failover on HTTP errors
-                    // Keep streamsDoc alive until we're done using the streams element
-                    redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
-                        type, id, season, episode, quality, index, streamsDoc.RootElement, config);
-                    
-                    // Cache the resolved redirect URL for future Range requests
-                    if (!string.IsNullOrWhiteSpace(redirectUrl))
-                    {
-                        var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
-                        _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
-                        _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
-                            type, id, season ?? "N/A", episode ?? "N/A");
-                    }
-                }
-                finally
-                {
-                    // Dispose the JsonDocument after we're done with it
-                    streamsDoc?.Dispose();
-                }
-            }
+            // Resolve the redirect URL (from cache or by fetching from addon)
+            var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config);
             
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
@@ -316,6 +217,164 @@ public class JfresolveApiController : ControllerBase
                 _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {Type}/{Id}", type, id);
                 return new EmptyResult();
             }
+        }
+    }
+
+    /// <summary>
+    /// Result of input validation and sanitization
+    /// </summary>
+    private class ValidationResult
+    {
+        public string? Type { get; set; }
+        public string? Id { get; set; }
+        public string? Season { get; set; }
+        public string? Episode { get; set; }
+        public string? Quality { get; set; }
+        public int? Index { get; set; }
+        public IActionResult? ErrorResult { get; set; }
+    }
+
+    /// <summary>
+    /// Validates and sanitizes ResolveStream input parameters
+    /// </summary>
+    private ValidationResult ValidateAndSanitizeResolveStreamInputs(
+        string type, string id, string? season, string? episode, string? quality, int? index)
+    {
+        var result = new ValidationResult();
+
+        // Input validation and sanitization
+        if (string.IsNullOrWhiteSpace(type))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - type parameter is empty");
+            result.ErrorResult = BadRequest("Type parameter is required");
+            return result;
+        }
+
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - id parameter is empty");
+            result.ErrorResult = BadRequest("Id parameter is required");
+            return result;
+        }
+
+        // Sanitize inputs - remove any potentially dangerous characters
+        result.Type = SanitizeInput(type);
+        result.Id = SanitizeInput(id);
+        result.Season = string.IsNullOrWhiteSpace(season) ? null : SanitizeInput(season);
+        result.Episode = string.IsNullOrWhiteSpace(episode) ? null : SanitizeInput(episode);
+        result.Quality = string.IsNullOrWhiteSpace(quality) ? null : SanitizeInput(quality);
+        result.Index = index;
+
+        // Validate type is one of the allowed values
+        if (!result.Type.Equals("movie", StringComparison.OrdinalIgnoreCase) && 
+            !result.Type.Equals("series", StringComparison.OrdinalIgnoreCase))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - unsupported type: {Type}", result.Type);
+            result.ErrorResult = BadRequest("Type must be 'movie' or 'series'");
+            return result;
+        }
+
+        // Validate IMDB ID format
+        if (!IsValidImdbId(result.Id))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - invalid IMDB ID format: {Id}", result.Id);
+            result.ErrorResult = BadRequest("Invalid IMDB ID format. Expected format: tt1234567");
+            return result;
+        }
+
+        // Validate season and episode for series
+        if (result.Type.Equals("series", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(result.Season) || !IsValidSeasonOrEpisode(result.Season))
+            {
+                _logger.LogWarning("Jfresolve: Invalid request - invalid season: {Season}", result.Season);
+                result.ErrorResult = BadRequest("Season must be a positive number between 1 and 999");
+                return result;
+            }
+            if (string.IsNullOrWhiteSpace(result.Episode) || !IsValidSeasonOrEpisode(result.Episode))
+            {
+                _logger.LogWarning("Jfresolve: Invalid request - invalid episode: {Episode}", result.Episode);
+                result.ErrorResult = BadRequest("Episode must be a positive number between 1 and 999");
+                return result;
+            }
+        }
+
+        // Validate index is within reasonable bounds
+        if (result.Index.HasValue && (result.Index.Value < 0 || result.Index.Value > 100))
+        {
+            _logger.LogWarning("Jfresolve: Invalid request - index out of bounds: {Index}", result.Index.Value);
+            result.ErrorResult = BadRequest("Index must be between 0 and 100");
+            return result;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Resolves the redirect URL from cache or by fetching from addon
+    /// </summary>
+    private async Task<string?> ResolveRedirectUrlAsync(
+        string type, string id, string? season, string? episode, string? quality, int? index,
+        Configuration.PluginConfiguration config)
+    {
+        // Validate series parameters
+        if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
+        {
+            if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
+            {
+                _logger.LogWarning("Jfresolve: Missing season or episode for series");
+                return null;
+            }
+        }
+
+        _logger.LogInformation(
+            "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
+            type, id, season ?? "N/A", episode ?? "N/A"
+        );
+
+        // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
+        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index);
+        var now = DateTime.UtcNow;
+        CleanupRedirectUrlCacheIfNeeded();
+        
+        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
+        {
+            _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                type, id, season ?? "N/A", episode ?? "N/A");
+            return cachedRedirect.RedirectUrl;
+        }
+
+        // Get streams from addon (returns JsonDocument that must be kept alive)
+        JsonDocument? streamsDoc = null;
+        try
+        {
+            streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
+            if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
+            {
+                _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
+                return null;
+            }
+
+            // Select stream using quality selector and failover logic with immediate failover on HTTP errors
+            // Keep streamsDoc alive until we're done using the streams element
+            var redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
+                type, id, season, episode, quality, index, streamsDoc.RootElement, config);
+            
+            // Cache the resolved redirect URL for future Range requests
+            if (!string.IsNullOrWhiteSpace(redirectUrl))
+            {
+                var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
+                _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
+                _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                    type, id, season ?? "N/A", episode ?? "N/A");
+            }
+
+            return redirectUrl;
+        }
+        finally
+        {
+            // Dispose the JsonDocument after we're done with it
+            streamsDoc?.Dispose();
         }
     }
 

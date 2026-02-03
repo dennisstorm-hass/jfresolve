@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.32",
+        "changelog": "Code quality improvements: Extracted HttpClient configuration magic numbers to Constants.cs for better maintainability. Refactored ResolveStream method by extracting validation logic into ValidateAndSanitizeResolveStreamInputs and redirect URL resolution into ResolveRedirectUrlAsync, making the code more modular and easier to maintain. The main ResolveStream method is now significantly shorter and more readable. Completed improvements from IMPROVEMENTS.md items 1-5, 10-13.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.32/jfresolve.zip",
+        "checksum": "35c197abee3bcfa7bff3b51f00b98688",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:52:55Z"
+      },
+      {
         "version": "1.0.0.31",
         "changelog": "Performance optimization: Added redirect URL caching to significantly reduce redundant API calls during streaming. The resolved redirect URL (from addon, before following redirects) is now cached and reused for subsequent Range requests, eliminating unnecessary stream resolution calls. This reduces load on the addon API and improves streaming performance. Subsequent Range requests now skip GetStreamsFromAddonAsync and SelectAndResolveStreamUrlWithFailoverAsync entirely when a cached redirect URL is available.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.31/jfresolve.zip",

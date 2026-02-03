@@ -50,20 +50,20 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddHttpClient("Jfresolve.Addon")
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
             {
-                MaxConnectionsPerServer = 10,
+                MaxConnectionsPerServer = Constants.AddonHttpClientMaxConnectionsPerServer,
                 AllowAutoRedirect = true
             })
-            .SetHandlerLifetime(TimeSpan.FromMinutes(5));
+            .SetHandlerLifetime(Constants.AddonHttpClientHandlerLifetime);
 
         // Configure named HttpClient for streaming (long timeout, connection pooling)
         // Handler lifetime set to 1 hour to support long playback sessions
         services.AddHttpClient("Jfresolve.Stream")
             .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
             {
-                MaxConnectionsPerServer = 20,
+                MaxConnectionsPerServer = Constants.StreamHttpClientMaxConnectionsPerServer,
                 AllowAutoRedirect = false // We handle redirects manually
             })
-            .SetHandlerLifetime(TimeSpan.FromHours(1));
+            .SetHandlerLifetime(Constants.StreamHttpClientHandlerLifetime);
         
         // Register HttpContextAccessor for accessing HTTP context in decorators (required for Jellyfin 10.11.6 compatibility)
         services.AddHttpContextAccessor();
