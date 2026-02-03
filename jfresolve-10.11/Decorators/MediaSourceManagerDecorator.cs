@@ -1,5 +1,6 @@
 #nullable disable
 using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.Linq;
 using System.Threading;
@@ -36,6 +37,13 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     private readonly IItemRepository _repo;
     private readonly IDirectoryService _directoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
+    
+    // Track items that have been probed or are currently being probed
+    // Key: item ID, Value: timestamp when probe was initiated
+    private static readonly ConcurrentDictionary<Guid, DateTime> _probedItems = new();
+    private static DateTime _lastProbeCacheCleanup = DateTime.UtcNow;
+    private const int ProbeCacheCleanupIntervalMinutes = 60;
+    private const int RecentlyAddedThresholdMinutes = 5; // Consider items added within last 5 minutes as "newly added"
 
     public MediaSourceManagerDecorator(
         IMediaSourceManager inner,
@@ -310,51 +318,74 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             // Check if this is a Jfresolve item that needs probing
             if (!string.IsNullOrEmpty(source.Path) && source.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
             {
-                _log.LogDebug("Jfresolve: No streams in database for {Name}, triggering background probe for subtitle preload", item.Name);
+                // Only probe if item was recently added (within threshold) and hasn't been probed yet
+                var wasRecentlyAdded = IsRecentlyAdded(item);
+                var alreadyProbed = _probedItems.ContainsKey(item.Id);
                 
-                // Trigger background probe to preload subtitle information
-                // This ensures subtitles are available in UI before first playback
-                // Fire-and-forget: don't await, don't block UI
-                _ = Task.Run(async () =>
+                if (wasRecentlyAdded && !alreadyProbed)
                 {
-                    try
+                    _log.LogDebug("Jfresolve: Item {Name} was recently added and needs probing for subtitle preload", item.Name);
+                    
+                    // Mark as probed to prevent duplicate probes
+                    _probedItems.TryAdd(item.Id, DateTime.UtcNow);
+                    
+                    // Cleanup old probe cache entries periodically
+                    CleanupProbeCacheIfNeeded();
+                    
+                    // Trigger background probe to preload subtitle information
+                    // This ensures subtitles are available in UI before first playback
+                    // Fire-and-forget: don't await, don't block UI
+                    _ = Task.Run(async () =>
                     {
-                        // Small delay to avoid blocking UI thread
-                        await Task.Delay(100);
-                        
-                        // Probe the item to extract stream information including subtitles
-                        var wasVirtual = item.IsVirtualItem;
-                        item.IsVirtualItem = false;
-                        
                         try
                         {
-                            await item.RefreshMetadata(
-                                new MetadataRefreshOptions(_directoryService)
-                                {
-                                    EnableRemoteContentProbe = true,
-                                    MetadataRefreshMode = MetadataRefreshMode.FullRefresh,
-                                },
-                                CancellationToken.None
-                            ).ConfigureAwait(false);
+                            // Small delay to avoid blocking UI thread
+                            await Task.Delay(100);
                             
-                            await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                            // Probe the item to extract stream information including subtitles
+                            var wasVirtual = item.IsVirtualItem;
+                            item.IsVirtualItem = false;
                             
-                            var probedStreams = _inner.GetMediaStreams(item.Id);
-                            var subtitleCount = probedStreams.Count(s => s.Type == MediaStreamType.Subtitle);
-                            _log.LogInformation("Jfresolve: Background probe completed for {Name} - {SubtitleCount} subtitle stream(s) now available in UI", 
-                                item.Name, subtitleCount);
+                            try
+                            {
+                                await item.RefreshMetadata(
+                                    new MetadataRefreshOptions(_directoryService)
+                                    {
+                                        EnableRemoteContentProbe = true,
+                                        MetadataRefreshMode = MetadataRefreshMode.FullRefresh,
+                                    },
+                                    CancellationToken.None
+                                ).ConfigureAwait(false);
+                                
+                                await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                                
+                                var probedStreams = _inner.GetMediaStreams(item.Id);
+                                var subtitleCount = probedStreams.Count(s => s.Type == MediaStreamType.Subtitle);
+                                _log.LogInformation("Jfresolve: Background probe completed for {Name} - {SubtitleCount} subtitle stream(s) now available in UI", 
+                                    item.Name, subtitleCount);
+                            }
+                            finally
+                            {
+                                item.IsVirtualItem = wasVirtual;
+                                await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                            }
                         }
-                        finally
+                        catch (Exception ex)
                         {
-                            item.IsVirtualItem = wasVirtual;
-                            await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, CancellationToken.None).ConfigureAwait(false);
+                            _log.LogWarning(ex, "Jfresolve: Background probe failed for {Name}, subtitles will be available after first playback", item.Name);
+                            // Remove from cache on failure so we can retry later if needed
+                            _probedItems.TryRemove(item.Id, out _);
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        _log.LogWarning(ex, "Jfresolve: Background probe failed for {Name}, subtitles will be available after first playback", item.Name);
-                    }
-                });
+                    });
+                }
+                else if (!wasRecentlyAdded)
+                {
+                    _log.LogDebug("Jfresolve: Item {Name} is not recently added, skipping background probe", item.Name);
+                }
+                else if (alreadyProbed)
+                {
+                    _log.LogDebug("Jfresolve: Item {Name} has already been probed, skipping duplicate probe", item.Name);
+                }
             }
         }
 
@@ -495,4 +526,58 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     public Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, bool isLiveStream, CancellationToken cancellationToken)
         => _inner.AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, isLiveStream, cancellationToken);
+    
+    /// <summary>
+    /// Check if an item was recently added (within the threshold time)
+    /// </summary>
+    private bool IsRecentlyAdded(BaseItem item)
+    {
+        if (item.DateCreated == default)
+        {
+            // If DateCreated is not set, assume it's not recently added
+            return false;
+        }
+        
+        var timeSinceCreation = DateTime.UtcNow - item.DateCreated.ToUniversalTime();
+        var isRecent = timeSinceCreation.TotalMinutes <= RecentlyAddedThresholdMinutes;
+        
+        if (isRecent)
+        {
+            _log.LogDebug("Jfresolve: Item {Name} was created {Minutes} minutes ago (threshold: {Threshold} minutes)", 
+                item.Name, timeSinceCreation.TotalMinutes, RecentlyAddedThresholdMinutes);
+        }
+        
+        return isRecent;
+    }
+    
+    /// <summary>
+    /// Cleanup old entries from the probe cache
+    /// </summary>
+    private void CleanupProbeCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        if ((now - _lastProbeCacheCleanup).TotalMinutes < ProbeCacheCleanupIntervalMinutes)
+        {
+            return;
+        }
+        
+        _lastProbeCacheCleanup = now;
+        var cutoffTime = now.AddMinutes(-RecentlyAddedThresholdMinutes * 2); // Keep entries for 2x the threshold
+        
+        var keysToRemove = _probedItems
+            .Where(kvp => kvp.Value < cutoffTime)
+            .Select(kvp => kvp.Key)
+            .ToList();
+        
+        foreach (var key in keysToRemove)
+        {
+            _probedItems.TryRemove(key, out _);
+        }
+        
+        if (keysToRemove.Count > 0)
+        {
+            _log.LogDebug("Jfresolve: Cleaned up {Count} old probe cache entries (remaining: {Remaining})", 
+                keysToRemove.Count, _probedItems.Count);
+        }
+    }
 }

@@ -9,9 +9,17 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.25",
+        "changelog": "Fixed subtitle preloading to only run for newly added items: Subtitle background probing now only triggers for items that were added within the last 5 minutes, preventing unnecessary probes when viewing existing items. Added probe tracking cache to prevent duplicate probes. Existing items will have subtitles available after first playback as before. This reduces unnecessary background processing when browsing the library.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.25/jfresolve.zip",
+        "checksum": "82b2be25560ad2da0ea6d05cd8d2590c",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T08:56:25Z"
+      },
+      {
         "version": "1.0.0.24",
         "changelog": "Preload subtitle information in UI: Added background probing when items are viewed in the Jellyfin interface to preload subtitle information before first playback. Subtitle streams are now available in the UI shortly after viewing an item, without waiting for first playback. Background probe runs asynchronously and doesn't block the UI. GetStaticMediaSources now uses streams from database to ensure subtitle information is immediately available when items are displayed.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.24/jfresolve.zip",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/I/jfresolve.zip",
         "checksum": "ee9e6853f259ef166323d6f5ddbb7c5d",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-02-02T21:46:49Z"
