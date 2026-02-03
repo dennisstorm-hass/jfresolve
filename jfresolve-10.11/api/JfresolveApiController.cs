@@ -1537,20 +1537,78 @@ public class JfresolveApiController : ControllerBase
     /// </summary>
     /// <summary>
     /// Checks if the request is authorized to access the stream endpoint
-    /// Allows requests from localhost (FFmpeg) or authenticated Jellyfin users
+    /// Allows requests from localhost, server's own IP (including Docker), or authenticated Jellyfin users
     /// </summary>
     private bool IsRequestAuthorized()
     {
-        // Check if request is from localhost (FFmpeg runs on same server)
-        // This is the primary authorization method since FFmpeg needs access
         var remoteIp = HttpContext.Connection.RemoteIpAddress;
+        var config = JfresolvePlugin.Instance?.Configuration;
+        var requestHost = Request.Host.Host;
+        
+        // Check if request is from localhost (FFmpeg runs on same server/container)
+        // This works for both bare-metal and Docker
         if (remoteIp != null)
         {
+            // Allow localhost (works for both bare-metal and Docker)
             if (System.Net.IPAddress.IsLoopback(remoteIp) || 
                 remoteIp.ToString() == "127.0.0.1" || 
                 remoteIp.ToString() == "::1")
             {
                 return true; // Localhost is trusted (FFmpeg)
+            }
+        }
+
+        // Check if request Host header matches the server's configured URL
+        // This is the primary check for Docker scenarios - if the request is to the server's own hostname,
+        // it's likely an internal request (FFmpeg/ffprobe) even if the IP is from Docker network
+        if (config != null && !string.IsNullOrWhiteSpace(config.JellyfinServerUrl))
+        {
+            try
+            {
+                var serverUri = new Uri(config.JellyfinServerUrl);
+                var serverHost = serverUri.Host;
+                
+                // Allow if Host header matches server URL hostname (works for Docker and bare-metal)
+                // This catches FFmpeg/ffprobe requests that use the server's hostname
+                if (requestHost.Equals(serverHost, StringComparison.OrdinalIgnoreCase))
+                {
+                    // Additional security: only allow if it's from a private IP or localhost
+                    // This prevents external requests from spoofing the Host header
+                    if (remoteIp == null || 
+                        System.Net.IPAddress.IsLoopback(remoteIp) ||
+                        IsPrivateIPAddressForAuth(remoteIp))
+                    {
+                        return true; // Request to server's own hostname from internal IP
+                    }
+                }
+            }
+            catch
+            {
+                // If URL parsing fails, fall through to other checks
+            }
+        }
+
+        // Allow requests from private IP ranges when Host matches (Docker scenario)
+        // FFmpeg/ffprobe requests in Docker come from Docker network IPs (172.17.x.x, 192.168.x.x, etc.)
+        if (remoteIp != null && IsPrivateIPAddressForAuth(remoteIp))
+        {
+            // If Host header matches server URL, trust it (Docker internal network)
+            if (config != null && !string.IsNullOrWhiteSpace(config.JellyfinServerUrl))
+            {
+                try
+                {
+                    var serverUri = new Uri(config.JellyfinServerUrl);
+                    var serverHost = serverUri.Host;
+                    
+                    if (requestHost.Equals(serverHost, StringComparison.OrdinalIgnoreCase))
+                    {
+                        return true; // Request from Docker network to server's hostname
+                    }
+                }
+                catch
+                {
+                    // If URL parsing fails, fall through
+                }
             }
         }
 
@@ -1566,7 +1624,6 @@ public class JfresolveApiController : ControllerBase
         var referer = Request.Headers["Referer"].FirstOrDefault();
         if (!string.IsNullOrWhiteSpace(referer))
         {
-            var config = JfresolvePlugin.Instance?.Configuration;
             var serverUrl = config?.JellyfinServerUrl ?? "http://localhost:8096";
             var normalizedServerUrl = serverUrl.TrimEnd('/');
             if (referer.StartsWith(normalizedServerUrl, StringComparison.OrdinalIgnoreCase))
@@ -1728,7 +1785,44 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
+    /// Checks if an IP address is in a private range (RFC 1918)
+    /// Used for authorization to allow server's own IP
+    /// </summary>
+    private static bool IsPrivateIPAddressForAuth(System.Net.IPAddress ip)
+    {
+        if (ip == null)
+            return false;
+            
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            var bytes = ip.GetAddressBytes();
+            
+            // 10.0.0.0/8
+            if (bytes[0] == 10)
+                return true;
+            
+            // 192.168.0.0/16
+            if (bytes[0] == 192 && bytes[1] == 168)
+                return true;
+            
+            // 172.16.0.0/12
+            if (bytes[0] == 172 && bytes[1] >= 16 && bytes[1] <= 31)
+                return true;
+        }
+        else if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            // IPv6 link-local addresses (fe80::/10) are considered private for authorization
+            var bytes = ip.GetAddressBytes();
+            if (bytes.Length >= 2 && bytes[0] == 0xFE && (bytes[1] & 0xC0) == 0x80)
+                return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
     /// Checks if an IP address is private (RFC 1918)
+    /// Used for SSRF protection to block private IPs in URLs
     /// </summary>
     private static bool IsPrivateIPAddress(System.Net.IPAddress ip)
     {

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.28",
+        "changelog": "Fixed authorization for Docker deployments: Updated authorization logic to properly handle requests from Docker containers. Authorization now checks Host header matching server URL, allowing FFmpeg/ffprobe requests from Docker network IPs when accessing the server's hostname. Works for both bare-metal and Docker deployments. This fixes the 401 Unauthorized errors when Jellyfin runs in Docker containers.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.28/jfresolve.zip",
+        "checksum": "89ba9d71dc58855ae6b97e2d8e2a4f44",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:14:49Z"
+      },
+      {
         "version": "1.0.0.27",
         "changelog": "Security and resilience improvements: Enhanced stream error handling with better error messages and appropriate HTTP status codes. Added circuit breaker pattern for TMDB API and Stremio addon calls to prevent cascading failures. Improved partial failure handling - image downloads and quality versions now continue on individual failures. Added comprehensive input sanitization and validation to prevent injection attacks. Implemented authorization checks for stream endpoint while maintaining FFmpeg compatibility. Enhanced URL validation to prevent SSRF attacks with comprehensive IP range blocking. Added SecurityHelper for safe logging of sensitive data. All improvements from IMPROVEMENTS.md items 19-21, 25-28.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.27/jfresolve.zip",
