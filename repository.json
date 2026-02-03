@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.26",
+        "changelog": "Fixed 'Additional data' delay when playing movies/series: Populated MediaSourceInfo with subtitle streams from database to prevent Jellyfin from doing additional probing. When subtitle streams exist in database but are missing from MediaSourceInfo, they are now automatically populated before playback starts. This eliminates the long delay when Jellyfin tries to extract subtitle metadata from embedded streams, significantly improving playback start time.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.26/jfresolve.zip",
+        "checksum": "219309593915253d5f96a3536a33f21d",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T09:12:21Z"
+      },
+      {
         "version": "1.0.0.25",
         "changelog": "Fixed subtitle preloading to only run for newly added items: Subtitle background probing now only triggers for items that were added within the last 5 minutes, preventing unnecessary probes when viewing existing items. Added probe tracking cache to prevent duplicate probes. Existing items will have subtitles available after first playback as before. This reduces unnecessary background processing when browsing the library.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.25/jfresolve.zip",

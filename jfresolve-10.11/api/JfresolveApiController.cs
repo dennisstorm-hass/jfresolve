@@ -245,11 +245,11 @@ public class JfresolveApiController : ControllerBase
         string? season,
         string? episode,
         Configuration.PluginConfiguration config)
-    {
-        // Normalize the manifest URL (remove stremio://, convert to https://)
-        var manifestBase = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
+        {
+            // Normalize the manifest URL (remove stremio://, convert to https://)
+            var manifestBase = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
 
-        // Build the stream endpoint URL
+            // Build the stream endpoint URL
         string streamUrl = BuildStreamUrl(manifestBase, type, id, season, episode);
         if (string.IsNullOrWhiteSpace(streamUrl))
         {
@@ -270,7 +270,7 @@ public class JfresolveApiController : ControllerBase
                     var streamsJson = JsonSerializer.Serialize(cachedStreams);
                     cachedDoc.Dispose();
                     return JsonDocument.Parse(streamsJson);
-                }
+            }
                 cachedDoc.Dispose();
             }
             catch (Exception ex)
@@ -278,23 +278,23 @@ public class JfresolveApiController : ControllerBase
                 _logger.LogWarning(ex, "Jfresolve: Failed to parse cached stream metadata, fetching fresh");
                 // Fall through to fetch fresh data
             }
-        }
+            }
 
-        _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
+            _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
 
-        // Call the Stremio addon to get the stream
+            // Call the Stremio addon to get the stream
         var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
         addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
         addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
-        var response = await addonHttpClient.GetStringAsync(streamUrl);
+            var response = await addonHttpClient.GetStringAsync(streamUrl);
 
-        // Parse the JSON response
+            // Parse the JSON response
         var json = JsonDocument.Parse(response);
         
         // Extract the streams array and create a new JsonDocument containing only the streams
         // This allows us to dispose the original document while keeping the streams data alive
         if (json.RootElement.TryGetProperty("streams", out var streams) && streams.GetArrayLength() > 0)
-        {
+            {
             // Cache the full response for future requests
             var expiry = now.Add(Constants.StreamMetadataCacheExpiry);
             _streamMetadataCache.AddOrUpdate(streamUrl, (response, expiry), (key, oldValue) => (response, expiry));
@@ -419,7 +419,7 @@ public class JfresolveApiController : ControllerBase
         else
         {
             return $"{manifestBase}/stream/{type}/{id}.json";
-        }
+            }
     }
 
     /// <summary>
@@ -435,36 +435,36 @@ public class JfresolveApiController : ControllerBase
         JsonElement streams,
         Configuration.PluginConfiguration config)
     {
-        // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
-        var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
-        int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
+            // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
+            var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
+            int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
 
-        // Select the stream using failover-adjusted index
+            // Select the stream using failover-adjusted index
         var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex);
-        if (selectedStream == null)
-        {
-            _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
+            if (selectedStream == null)
+            {
+                _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
             return null;
-        }
+            }
 
-        if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
-        {
-            _logger.LogWarning("Jfresolve: No URL property in stream response");
+            if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
+            {
+                _logger.LogWarning("Jfresolve: No URL property in stream response");
             return null;
-        }
+            }
 
-        var redirectUrl = urlProperty.GetString();
-        if (string.IsNullOrWhiteSpace(redirectUrl))
-        {
-            _logger.LogWarning("Jfresolve: Empty stream URL received");
+            var redirectUrl = urlProperty.GetString();
+            if (string.IsNullOrWhiteSpace(redirectUrl))
+            {
+                _logger.LogWarning("Jfresolve: Empty stream URL received");
             return null;
-        }
+            }
 
-        _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
+            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
 
         // Validate URL to prevent SSRF attacks
         if (!IsValidStreamUrl(redirectUrl))
-        {
+            {
             _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
             return null;
         }
@@ -477,14 +477,14 @@ public class JfresolveApiController : ControllerBase
     /// </summary>
     private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id)
     {
-        // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
-        // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
-        // By proxying, FFmpeg gets the stream directly without needing to follow redirects
-        // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
-        try
-        {
-            _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
-            
+            // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
+            // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
+            // By proxying, FFmpeg gets the stream directly without needing to follow redirects
+            // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
+            try
+            {
+                _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
+                
             // Disable response buffering for optimal streaming performance
             Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
             Response.Headers["Pragma"] = Constants.PragmaNoCache;
@@ -494,15 +494,15 @@ public class JfresolveApiController : ControllerBase
             // Use a very long timeout (4 hours) to handle long movies/episodes without interruption
             // The timeout applies to the entire operation including all read operations
             streamHttpClient.Timeout = TimeSpan.FromHours(Constants.StreamRequestTimeoutHours);
-            
-            // Handle HTTP Range requests for seeking (required by FFmpeg)
-            var rangeHeader = Request.Headers["Range"].ToString();
+                
+                // Handle HTTP Range requests for seeking (required by FFmpeg)
+                var rangeHeader = Request.Headers["Range"].ToString();
             long? rangeStart = null;
-            
+                
             // Parse range header to extract start position for workaround
-            if (!string.IsNullOrEmpty(rangeHeader))
-            {
-                _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
+                if (!string.IsNullOrEmpty(rangeHeader))
+                {
+                    _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
                 rangeStart = ParseRangeStart(rangeHeader);
             }
             
@@ -510,10 +510,10 @@ public class JfresolveApiController : ControllerBase
             
             if (!string.IsNullOrEmpty(rangeHeader))
             {
-                requestMessage.Headers.Add("Range", rangeHeader);
-            }
-            
-            // Stream the content directly to the response
+                    requestMessage.Headers.Add("Range", rangeHeader);
+                }
+                
+                // Stream the content directly to the response
             // Use RequestAborted cancellation token so upstream request is cancelled when client disconnects
             // This ensures immediate cleanup when user stops playback
             var cancellationToken = HttpContext.RequestAborted;
@@ -654,38 +654,38 @@ public class JfresolveApiController : ControllerBase
                 // Don't know total length - can't set proper Content-Range
                 // This is okay, we'll still skip bytes and stream the rest
                 _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (skipping {Bytes} bytes, unknown total length)", rangeStart.Value);
-            }
+                }
         }
         else
         {
             // Copy status code (206 for partial content if range was requested and supported)
             Response.StatusCode = (int)streamResponse.StatusCode;
-            
-            // Copy Content-Range header if present (for 206 Partial Content responses)
-            // Content-Range can be in response headers or content headers depending on the server
-            string? contentRangeValue = null;
-            if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
-            {
-                contentRangeValue = responseContentRange.FirstOrDefault();
-            }
-            else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
-            {
-                contentRangeValue = contentContentRange.FirstOrDefault();
-            }
-            
-            if (!string.IsNullOrEmpty(contentRangeValue))
-            {
-                Response.Headers["Content-Range"] = contentRangeValue;
-            }
-            
+                
+                // Copy Content-Range header if present (for 206 Partial Content responses)
+                // Content-Range can be in response headers or content headers depending on the server
+                string? contentRangeValue = null;
+                if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
+                {
+                    contentRangeValue = responseContentRange.FirstOrDefault();
+                }
+                else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
+                {
+                    contentRangeValue = contentContentRange.FirstOrDefault();
+                }
+                
+                if (!string.IsNullOrEmpty(contentRangeValue))
+                {
+                    Response.Headers["Content-Range"] = contentRangeValue;
+                }
+                
             // Only set Content-Length for range requests (206 Partial Content) where we know the exact range size
             if (upstreamSupportsRange && 
                 streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
                 streamResponse.Content.Headers.ContentLength.HasValue)
-            {
+                {
                 // For 206 Partial Content, Content-Length represents the range size, which is safe to set
-                Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
-            }
+                    Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+                }
         }
 
         // Copy headers that might be important for streaming
@@ -723,8 +723,8 @@ public class JfresolveApiController : ControllerBase
         
         // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
         // The stream must be fully read before HttpResponseMessage disposal completes
-        using (var stream = await streamResponse.Content.ReadAsStreamAsync())
-        {
+                using (var stream = await streamResponse.Content.ReadAsStreamAsync())
+                {
             try
             {
                 // Skip bytes if upstream doesn't support range requests
@@ -746,10 +746,10 @@ public class JfresolveApiController : ControllerBase
                     _logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
                 }
                 
-                int bytesRead;
+                    int bytesRead;
                 while (!cancellationToken.IsCancellationRequested && 
                        (bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
-                {
+                    {
                     await Response.Body.WriteAsync(buffer, 0, bytesRead, cancellationToken);
                     bufferCount++;
                     
@@ -789,7 +789,7 @@ public class JfresolveApiController : ControllerBase
                         type, id, bufferCount * bufferSize);
                 }
                 else
-                {
+        {
                     _logger.LogError(
                         tce,
                         "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}",
@@ -808,7 +808,7 @@ public class JfresolveApiController : ControllerBase
                         type, id, bufferCount * bufferSize);
                 }
                 else
-                {
+        {
                     _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id);
                     throw;
                 }

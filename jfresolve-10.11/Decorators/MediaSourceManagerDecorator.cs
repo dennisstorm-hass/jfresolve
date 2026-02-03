@@ -104,6 +104,23 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 ApplyTrick(info);
             }
             
+            // CRITICAL: Ensure MediaStreams on MediaSourceInfo are populated from database
+            // This prevents Jellyfin from doing additional probing ("Additional data" delay)
+            // Get streams from database (which were populated by the probe)
+            var dbStreams = _inner.GetMediaStreams(primaryItem.Id).ToList();
+            if (dbStreams.Any())
+            {
+                var updatedSource = sources.FirstOrDefault();
+                if (updatedSource != null)
+                {
+                    // Replace MediaStreams on the source with streams from database
+                    // This ensures subtitle information is immediately available without additional probing
+                    updatedSource.MediaStreams = dbStreams;
+                    _log.LogInformation("Jfresolve: Populated MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
+                }
+            }
+            
             // Ensure media info is complete by using AddMediaInfoWithProbe on the primary source
             // This ensures subtitle information is available before playback starts, preventing stream restarts when subtitles are changed
             if (primarySource != null && !string.IsNullOrEmpty(primarySource.Path) && 
@@ -126,6 +143,33 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 catch (Exception ex)
                 {
                     _log.LogWarning(ex, "Jfresolve: Failed to add media info with probe for {Name}, continuing anyway", primaryItem.Name);
+                }
+            }
+        }
+        else if (primarySource != null)
+        {
+            // Even if we don't need to probe, ensure MediaStreams are populated from database
+            // This prevents Jellyfin from doing additional probing for subtitle information ("Additional data" delay)
+            var dbStreams = _inner.GetMediaStreams(primaryItem.Id).ToList();
+            if (dbStreams.Any())
+            {
+                var hasSubtitleStreams = dbStreams.Any(s => s.Type == MediaStreamType.Subtitle);
+                var sourceHasSubtitleStreams = primarySource.MediaStreams?.Any(s => s.Type == MediaStreamType.Subtitle) ?? false;
+                
+                // If database has subtitle streams but source doesn't, populate from database
+                // This prevents Jellyfin from doing additional probing to extract subtitle information
+                if (hasSubtitleStreams && !sourceHasSubtitleStreams)
+                {
+                    primarySource.MediaStreams = dbStreams;
+                    _log.LogDebug("Jfresolve: Populated MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
+                }
+                // If source has no streams at all, populate from database
+                else if (primarySource.MediaStreams == null || !primarySource.MediaStreams.Any())
+                {
+                    primarySource.MediaStreams = dbStreams;
+                    _log.LogDebug("Jfresolve: Populated MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} without probing", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
                 }
             }
         }
