@@ -1432,6 +1432,7 @@ public class JfresolveApiController : ControllerBase
         string operationName,
         CancellationToken cancellationToken)
     {
+        Exception? lastException = null;
         for (int attempt = 0; attempt < Constants.MaxStreamRetryAttempts; attempt++)
         {
             HttpRequestMessage? request = null;
@@ -1439,6 +1440,13 @@ public class JfresolveApiController : ControllerBase
             {
                 request = requestFactory();
                 var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                
+                // Return 2xx (success) and 3xx (redirect) responses immediately - these are valid
+                if (response.IsSuccessStatusCode || ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400))
+                {
+                    // Request will be disposed when response is disposed
+                    return response;
+                }
                 
                 // Don't retry on 4xx errors (client errors) - these are permanent failures
                 if ((int)response.StatusCode >= 400 && (int)response.StatusCode < 500)
@@ -1449,10 +1457,10 @@ public class JfresolveApiController : ControllerBase
                     return response; // Return the error response
                 }
                 
-                // Retry on 5xx errors (server errors) and network errors
-                if (response.IsSuccessStatusCode || (int)response.StatusCode >= 500)
+                // Retry on 5xx errors (server errors)
+                if ((int)response.StatusCode >= 500)
                 {
-                    if (!response.IsSuccessStatusCode && attempt < Constants.MaxStreamRetryAttempts - 1)
+                    if (attempt < Constants.MaxStreamRetryAttempts - 1)
                     {
                         // Retry on server errors
                         var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
@@ -1466,22 +1474,27 @@ public class JfresolveApiController : ControllerBase
                         continue;
                     }
                     
-                    // Request will be disposed when response is disposed
+                    // Final attempt failed, return the error response
                     return response;
                 }
             }
-            catch (HttpRequestException ex) when (attempt < Constants.MaxStreamRetryAttempts - 1)
+            catch (HttpRequestException ex)
             {
-                // Retry on network errors
-                request?.Dispose();
-                var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                _logger.LogWarning(
-                    "Jfresolve: Stream {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
-                    operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
-                await Task.Delay(delay, cancellationToken);
+                lastException = ex;
+                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+                {
+                    // Retry on network errors
+                    request?.Dispose();
+                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
+                    _logger.LogWarning(
+                        "Jfresolve: Stream {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
+                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
+                    await Task.Delay(delay, cancellationToken);
+                }
             }
-            catch (TaskCanceledException) when (attempt < Constants.MaxStreamRetryAttempts - 1)
+            catch (TaskCanceledException ex)
             {
+                lastException = ex;
                 // Retry on timeout (but only if not cancelled by user)
                 if (cancellationToken.IsCancellationRequested)
                 {
@@ -1489,17 +1502,67 @@ public class JfresolveApiController : ControllerBase
                     throw; // User cancelled, don't retry
                 }
                 
-                request?.Dispose();
-                var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                _logger.LogWarning(
-                    "Jfresolve: Stream {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",
-                    operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
-                await Task.Delay(delay, cancellationToken);
+                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+                {
+                    request?.Dispose();
+                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
+                    _logger.LogWarning(
+                        "Jfresolve: Stream {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
+                    await Task.Delay(delay, cancellationToken);
+                }
+            }
+            catch (TimeoutException ex)
+            {
+                lastException = ex;
+                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+                {
+                    request?.Dispose();
+                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
+                    _logger.LogWarning(
+                        "Jfresolve: Stream {Operation} timeout exception, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
+                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
+                    await Task.Delay(delay, cancellationToken);
+                }
+            }
+            catch (IOException ex)
+            {
+                lastException = ex;
+                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+                {
+                    request?.Dispose();
+                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
+                    _logger.LogWarning(
+                        "Jfresolve: Stream {Operation} IO error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
+                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
+                    await Task.Delay(delay, cancellationToken);
+                }
+            }
+            catch (Exception ex)
+            {
+                lastException = ex;
+                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+                {
+                    request?.Dispose();
+                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
+                    _logger.LogWarning(
+                        "Jfresolve: Stream {Operation} unexpected error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
+                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
+                    await Task.Delay(delay, cancellationToken);
+                }
             }
         }
 
-        _logger.LogError("Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts", 
-            operationName, Constants.MaxStreamRetryAttempts);
+        if (lastException != null)
+        {
+            _logger.LogError(lastException, "Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts. Last error: {Error}", 
+                operationName, Constants.MaxStreamRetryAttempts, lastException.Message);
+        }
+        else
+        {
+            _logger.LogError("Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts (no exception details available)", 
+                operationName, Constants.MaxStreamRetryAttempts);
+        }
         return null;
     }
 

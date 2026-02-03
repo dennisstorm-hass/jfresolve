@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.30",
+        "changelog": "Fixed critical redirect handling bug: Fixed retry logic that was not returning 3xx redirect responses, causing all retry attempts to fail. The retry logic now properly handles 2xx (success) and 3xx (redirect) responses by returning them immediately, allowing FollowRedirectsAsync to process redirects correctly. This restores streaming functionality that worked in version 1.0.0.26. Also improved error logging to capture all exception types and provide detailed error information when retries fail.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.30/jfresolve.zip",
+        "checksum": "bb6613760b9b83cab7d26e251ea7527e",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:33:15Z"
+      },
+      {
         "version": "1.0.0.29",
         "changelog": "Fixed 500 errors from request message reuse: Fixed critical bug where HttpRequestMessage objects were being reused on retry attempts, causing 'The request message was already sent' errors. Each retry now creates a fresh HttpRequestMessage instance. Properly dispose request messages when retrying. This fixes the 500 Internal Server Error responses that were preventing stream playback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.29/jfresolve.zip",
