@@ -710,13 +710,6 @@ public class JfresolveApiController : ControllerBase
                     _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
                 rangeStart = ParseRangeStart(rangeHeader);
             }
-            
-            HttpRequestMessage requestMessage = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
-            
-            if (!string.IsNullOrEmpty(rangeHeader))
-            {
-                    requestMessage.Headers.Add("Range", rangeHeader);
-                }
                 
                 // Stream the content directly to the response
             // Use RequestAborted cancellation token so upstream request is cancelled when client disconnects
@@ -765,9 +758,18 @@ public class JfresolveApiController : ControllerBase
             {
                 // Follow redirects to get final URL (first time or cache expired)
                 // Retry initial connection on transient failures
+                // Create a new request message for each retry attempt
                 initialResponse = await ExecuteStreamRequestWithRetryAsync(
                     streamHttpClient,
-                    () => requestMessage,
+                    () =>
+                    {
+                        var retryRequest = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
+                        if (!string.IsNullOrEmpty(rangeHeader))
+                        {
+                            retryRequest.Headers.Add("Range", rangeHeader);
+                        }
+                        return retryRequest;
+                    },
                     $"initial redirect URL {redirectUrl}",
                     cancellationToken);
                 
@@ -1432,9 +1434,10 @@ public class JfresolveApiController : ControllerBase
     {
         for (int attempt = 0; attempt < Constants.MaxStreamRetryAttempts; attempt++)
         {
+            HttpRequestMessage? request = null;
             try
             {
-                var request = requestFactory();
+                request = requestFactory();
                 var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
                 
                 // Don't retry on 4xx errors (client errors) - these are permanent failures
@@ -1442,6 +1445,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     _logger.LogWarning("Jfresolve: Stream {Operation} failed with client error {StatusCode}, not retrying", 
                         operationName, response.StatusCode);
+                    // Request will be disposed when response is disposed
                     return response; // Return the error response
                 }
                 
@@ -1456,16 +1460,20 @@ public class JfresolveApiController : ControllerBase
                             "Jfresolve: Stream {Operation} failed with {StatusCode}, retrying in {Delay}ms (attempt {Attempt}/{Max})",
                             operationName, response.StatusCode, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
                         response.Dispose();
+                        request.Dispose();
+                        request = null;
                         await Task.Delay(delay, cancellationToken);
                         continue;
                     }
                     
+                    // Request will be disposed when response is disposed
                     return response;
                 }
             }
             catch (HttpRequestException ex) when (attempt < Constants.MaxStreamRetryAttempts - 1)
             {
                 // Retry on network errors
+                request?.Dispose();
                 var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
                 _logger.LogWarning(
                     "Jfresolve: Stream {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
@@ -1477,9 +1485,11 @@ public class JfresolveApiController : ControllerBase
                 // Retry on timeout (but only if not cancelled by user)
                 if (cancellationToken.IsCancellationRequested)
                 {
+                    request?.Dispose();
                     throw; // User cancelled, don't retry
                 }
                 
+                request?.Dispose();
                 var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
                 _logger.LogWarning(
                     "Jfresolve: Stream {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",

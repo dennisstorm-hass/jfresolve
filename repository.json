@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.29",
+        "changelog": "Fixed 500 errors from request message reuse: Fixed critical bug where HttpRequestMessage objects were being reused on retry attempts, causing 'The request message was already sent' errors. Each retry now creates a fresh HttpRequestMessage instance. Properly dispose request messages when retrying. This fixes the 500 Internal Server Error responses that were preventing stream playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.29/jfresolve.zip",
+        "checksum": "d0fe8608844e02b89026d5dcef0b5211",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:25:34Z"
+      },
+      {
         "version": "1.0.0.28",
         "changelog": "Fixed authorization for Docker deployments: Updated authorization logic to properly handle requests from Docker containers. Authorization now checks Host header matching server URL, allowing FFmpeg/ffprobe requests from Docker network IPs when accessing the server's hostname. Works for both bare-metal and Docker deployments. This fixes the 401 Unauthorized errors when Jellyfin runs in Docker containers.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.28/jfresolve.zip",
