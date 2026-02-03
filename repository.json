@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.31",
+        "changelog": "Performance optimization: Added redirect URL caching to significantly reduce redundant API calls during streaming. The resolved redirect URL (from addon, before following redirects) is now cached and reused for subsequent Range requests, eliminating unnecessary stream resolution calls. This reduces load on the addon API and improves streaming performance. Subsequent Range requests now skip GetStreamsFromAddonAsync and SelectAndResolveStreamUrlWithFailoverAsync entirely when a cached redirect URL is available.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.31/jfresolve.zip",
+        "checksum": "50d35514da3d853f9c6e47b0bc396c4a",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:41:56Z"
+      },
+      {
         "version": "1.0.0.30",
         "changelog": "Fixed critical redirect handling bug: Fixed retry logic that was not returning 3xx redirect responses, causing all retry attempts to fail. The retry logic now properly handles 2xx (success) and 3xx (redirect) responses by returning them immediately, allowing FollowRedirectsAsync to process redirects correctly. This restores streaming functionality that worked in version 1.0.0.26. Also improved error logging to capture all exception types and provide detailed error information when retries fail.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.30/jfresolve.zip",

@@ -63,6 +63,11 @@ public static class Constants
     public static readonly TimeSpan StreamMetadataCacheExpiry = TimeSpan.FromHours(1); // Cache stream metadata for 1 hour (increased for better resume performance)
     public static readonly TimeSpan StreamMetadataCacheCleanupInterval = TimeSpan.FromHours(2); // Cleanup every 2 hours
     
+    // Redirect URL caching (before redirects) - avoids re-resolving on every Range request
+    public const int RedirectUrlCacheMaxSize = 200; // Maximum cached redirect URLs
+    public static readonly TimeSpan RedirectUrlCacheExpiry = TimeSpan.FromHours(1); // Cache redirect URLs for 1 hour
+    public static readonly TimeSpan RedirectUrlCacheCleanupInterval = TimeSpan.FromHours(2); // Cleanup every 2 hours
+    
     // Final resolved URL caching (after redirects) - speeds up resume significantly
     public const int ResolvedUrlCacheMaxSize = 200; // Maximum cached resolved URLs
     public static readonly TimeSpan ResolvedUrlCacheExpiry = TimeSpan.FromHours(2); // Cache resolved URLs for 2 hours

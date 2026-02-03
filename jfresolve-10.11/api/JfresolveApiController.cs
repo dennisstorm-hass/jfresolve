@@ -39,6 +39,11 @@ public class JfresolveApiController : ControllerBase
     private static readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
     private static DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
     
+    // Redirect URL cache: caches resolved redirect URLs (from addon, before following redirects) to avoid re-resolving on every Range request
+    // Key: cache key built from request parameters (type, id, season, episode, quality, index), Value: (Redirect URL, ExpiryTime)
+    private static readonly ConcurrentDictionary<string, (string RedirectUrl, DateTime Expiry)> _redirectUrlCache = new();
+    private static DateTime _lastRedirectUrlCacheCleanup = DateTime.UtcNow;
+    
     // Resolved URL cache: caches final resolved stream URLs (after following redirects) to speed up resume
     // Key: original redirect URL, Value: (Final URL after redirects, ExpiryTime)
     private static readonly ConcurrentDictionary<string, (string FinalUrl, DateTime Expiry)> _resolvedUrlCache = new();
@@ -187,27 +192,50 @@ public class JfresolveApiController : ControllerBase
                 }
             }
 
-            // Get streams from addon (returns JsonDocument that must be kept alive)
-            JsonDocument? streamsDoc = null;
+            // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
             string? redirectUrl = null;
-            try
+            var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index);
+            var now = DateTime.UtcNow;
+            CleanupRedirectUrlCacheIfNeeded();
+            
+            if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
             {
-                streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
-                if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
-                {
-                    _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
-                    return NotFound($"No streams found for {id}");
-                }
-
-                // Select stream using quality selector and failover logic with immediate failover on HTTP errors
-                // Keep streamsDoc alive until we're done using the streams element
-                redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
-                    type, id, season, episode, quality, index, streamsDoc.RootElement, config);
+                redirectUrl = cachedRedirect.RedirectUrl;
+                _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                    type, id, season ?? "N/A", episode ?? "N/A");
             }
-            finally
+            else
             {
-                // Dispose the JsonDocument after we're done with it
-                streamsDoc?.Dispose();
+                // Get streams from addon (returns JsonDocument that must be kept alive)
+                JsonDocument? streamsDoc = null;
+                try
+                {
+                    streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
+                    if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
+                    {
+                        _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
+                        return NotFound($"No streams found for {id}");
+                    }
+
+                    // Select stream using quality selector and failover logic with immediate failover on HTTP errors
+                    // Keep streamsDoc alive until we're done using the streams element
+                    redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
+                        type, id, season, episode, quality, index, streamsDoc.RootElement, config);
+                    
+                    // Cache the resolved redirect URL for future Range requests
+                    if (!string.IsNullOrWhiteSpace(redirectUrl))
+                    {
+                        var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
+                        _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
+                        _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                            type, id, season ?? "N/A", episode ?? "N/A");
+                    }
+                }
+                finally
+                {
+                    // Dispose the JsonDocument after we're done with it
+                    streamsDoc?.Dispose();
+                }
             }
             
             if (string.IsNullOrWhiteSpace(redirectUrl))
@@ -423,6 +451,46 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Cleans up expired entries from the resolved URL cache
     /// </summary>
+    private static void CleanupRedirectUrlCacheIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Only run cleanup periodically to avoid performance impact
+        if (now - _lastRedirectUrlCacheCleanup < Constants.RedirectUrlCacheCleanupInterval)
+        {
+            return;
+        }
+
+        _lastRedirectUrlCacheCleanup = now;
+        var keysToRemove = new List<string>();
+
+        // Remove expired entries
+        foreach (var kvp in _redirectUrlCache)
+        {
+            if (kvp.Value.Expiry <= now)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        foreach (var key in keysToRemove)
+        {
+            _redirectUrlCache.TryRemove(key, out _);
+        }
+
+        // If cache is still too large, remove oldest entries
+        if (_redirectUrlCache.Count > Constants.RedirectUrlCacheMaxSize)
+        {
+            var entriesToRemove = _redirectUrlCache.Count - Constants.RedirectUrlCacheMaxSize;
+            var sortedByExpiry = _redirectUrlCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
+            
+            foreach (var kvp in sortedByExpiry)
+            {
+                _redirectUrlCache.TryRemove(kvp.Key, out _);
+            }
+        }
+    }
+
     private static void CleanupResolvedUrlCacheIfNeeded()
     {
         var now = DateTime.UtcNow;
@@ -1199,6 +1267,28 @@ public class JfresolveApiController : ControllerBase
         }
 
         key += $":{quality ?? "default"}";
+
+        return key;
+    }
+
+    /// <summary>
+    /// Builds a cache key for redirect URL caching (includes index for different stream versions)
+    /// </summary>
+    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index)
+    {
+        var key = $"{type}:{id}";
+
+        if (!string.IsNullOrEmpty(season) && !string.IsNullOrEmpty(episode))
+        {
+            key += $":{season}:{episode}";
+        }
+
+        key += $":{quality ?? "default"}";
+        
+        if (index.HasValue)
+        {
+            key += $":index{index.Value}";
+        }
 
         return key;
     }
