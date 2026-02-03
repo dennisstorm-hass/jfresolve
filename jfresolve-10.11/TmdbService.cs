@@ -15,6 +15,7 @@ public class TmdbService
 {
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly ILogger<TmdbService> _log;
+    private readonly Services.CircuitBreaker _circuitBreaker;
     private const string BaseUrl = Constants.TmdbBaseUrl;
 
     // Cache for IMDB ID lookups to avoid redundant API calls
@@ -24,10 +25,14 @@ public class TmdbService
     // Semaphore to throttle concurrent TMDB API requests
     private static readonly SemaphoreSlim _requestThrottle = new(Constants.MaxConcurrentTmdbRequests, Constants.MaxConcurrentTmdbRequests);
 
-    public TmdbService(IHttpClientFactory httpClientFactory, ILogger<TmdbService> log)
+    public TmdbService(
+        IHttpClientFactory httpClientFactory,
+        ILogger<TmdbService> log,
+        Services.CircuitBreakerFactory circuitBreakerFactory)
     {
         _httpClientFactory = httpClientFactory;
         _log = log;
+        _circuitBreaker = circuitBreakerFactory.GetOrCreate("TMDB");
     }
 
     public async Task<List<TmdbMovie>> SearchMoviesAsync(string query, string apiKey, bool includeAdult = false)
@@ -42,10 +47,13 @@ public class TmdbService
         {
             var url = $"{BaseUrl}/search/movie?api_key={apiKey}&query={Uri.EscapeDataString(query)}&include_adult={includeAdult.ToString().ToLower()}";
 
+            // Log search query but never log the API key or full URL with API key
             _log.LogInformation("Searching TMDB movies: {Query}", query);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB movie search");
+            var response = await _circuitBreaker.ExecuteAsync(
+                async () => await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB movie search"),
+                async () => { _log.LogWarning("Circuit breaker open for TMDB, returning empty results"); return (HttpResponseMessage?)null; });
 
             if (response == null || !response.IsSuccessStatusCode)
             {
@@ -90,7 +98,9 @@ public class TmdbService
             _log.LogInformation("Searching TMDB TV shows: {Query}", query);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB TV show search");
+            var response = await _circuitBreaker.ExecuteAsync(
+                async () => await ExecuteWithRetryAsync(async () => await client.GetAsync(url), "TMDB TV show search"),
+                async () => { _log.LogWarning("Circuit breaker open for TMDB, returning empty results"); return (HttpResponseMessage?)null; });
 
             if (response == null || !response.IsSuccessStatusCode)
             {
@@ -447,7 +457,9 @@ public class TmdbService
             _log.LogDebug("Fetching external IDs for TMDB {MediaType} ID: {TmdbId}", mediaType, tmdbId);
 
             var client = _httpClientFactory.CreateClient();
-            var response = await ExecuteWithRetryAsync(async () => await client.GetAsync(url), $"external IDs for {mediaType}/{tmdbId}");
+            var response = await _circuitBreaker.ExecuteAsync(
+                async () => await ExecuteWithRetryAsync(async () => await client.GetAsync(url), $"external IDs for {mediaType}/{tmdbId}"),
+                async () => { _log.LogWarning("Circuit breaker open for TMDB, returning null"); return (HttpResponseMessage?)null; });
 
             if (response == null || !response.IsSuccessStatusCode)
             {

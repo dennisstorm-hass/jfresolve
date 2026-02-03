@@ -48,6 +48,10 @@ public static class Constants
     // Retry configuration
     public const int MaxRetryAttempts = 3;
     public static readonly int[] RetryDelays = { 500, 1000, 2000 }; // milliseconds, exponential backoff
+    
+    // Stream proxy retry configuration (for initial connection only, not during streaming)
+    public const int MaxStreamRetryAttempts = 3;
+    public static readonly int[] StreamRetryDelays = { 1000, 2000, 4000 }; // milliseconds, exponential backoff
 
     // TMDB API optimization
     public const int MaxConcurrentTmdbRequests = 5; // Max concurrent requests to TMDB API (rate limit protection)
@@ -68,4 +72,15 @@ public static class Constants
     public const int FolderCacheMaxSize = 100; // Maximum cached folder references
     public static readonly TimeSpan FolderCacheExpiry = TimeSpan.FromHours(1); // Cache folders for 1 hour
     public static readonly TimeSpan FolderCacheCleanupInterval = TimeSpan.FromHours(2); // Cleanup every 2 hours
+    
+    // Lock cleanup configuration
+    public static readonly TimeSpan LockCleanupInterval = TimeSpan.FromHours(1); // Cleanup locks every hour
+    public static readonly TimeSpan LockMaxIdleTime = TimeSpan.FromHours(24); // Remove locks unused for 24 hours
+    public const int MaxItemLocks = 1000; // Maximum item locks before forced cleanup
+    public const int MaxPathLocks = 1000; // Maximum path locks before forced cleanup
+    
+    // Circuit breaker configuration
+    public const int CircuitBreakerFailureThreshold = 5; // Open circuit after 5 consecutive failures
+    public static readonly TimeSpan CircuitBreakerOpenDuration = TimeSpan.FromMinutes(1); // Keep circuit open for 1 minute
+    public static readonly TimeSpan CircuitBreakerHalfOpenTimeout = TimeSpan.FromSeconds(30); // Timeout for half-open test
 }

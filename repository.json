@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.27",
+        "changelog": "Security and resilience improvements: Enhanced stream error handling with better error messages and appropriate HTTP status codes. Added circuit breaker pattern for TMDB API and Stremio addon calls to prevent cascading failures. Improved partial failure handling - image downloads and quality versions now continue on individual failures. Added comprehensive input sanitization and validation to prevent injection attacks. Implemented authorization checks for stream endpoint while maintaining FFmpeg compatibility. Enhanced URL validation to prevent SSRF attacks with comprehensive IP range blocking. Added SecurityHelper for safe logging of sensitive data. All improvements from IMPROVEMENTS.md items 19-21, 25-28.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.27/jfresolve.zip",
+        "checksum": "47a84cef21ee7c0c88fa892f826c23e0",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T10:06:50Z"
+      },
+      {
         "version": "1.0.0.26",
         "changelog": "Fixed 'Additional data' delay when playing movies/series: Populated MediaSourceInfo with subtitle streams from database to prevent Jellyfin from doing additional probing. When subtitle streams exist in database but are missing from MediaSourceInfo, they are now automatically populated before playback starts. This eliminates the long delay when Jellyfin tries to extract subtitle metadata from embedded streams, significantly improving playback start time.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.26/jfresolve.zip",

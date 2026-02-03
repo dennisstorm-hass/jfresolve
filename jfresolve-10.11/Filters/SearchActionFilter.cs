@@ -55,6 +55,14 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
             return;
         }
 
+        // Sanitize search term to prevent injection attacks
+        searchTerm = SanitizeSearchTerm(searchTerm);
+        if (string.IsNullOrWhiteSpace(searchTerm))
+        {
+            await next();
+            return;
+        }
+
         // Handle "local:" prefix - pass through to default Jellyfin search
         if (searchTerm.StartsWith("local:", StringComparison.OrdinalIgnoreCase))
         {
@@ -200,6 +208,33 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
         }
 
         return requested;
+    }
+
+    /// <summary>
+    /// Sanitizes search term to prevent injection attacks
+    /// Allows letters, numbers, spaces, and common punctuation for search queries
+    /// </summary>
+    private static string SanitizeSearchTerm(string input)
+    {
+        if (string.IsNullOrWhiteSpace(input))
+            return string.Empty;
+
+        // Remove control characters
+        var sanitized = new string(input.Where(c => !char.IsControl(c)).ToArray()).Trim();
+        
+        // Allow letters, numbers, spaces, hyphens, apostrophes, and common punctuation
+        // This is more permissive than URL sanitization since search terms need more flexibility
+        var allowedChars = new HashSet<char>("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -'.,!?()[]");
+        sanitized = new string(sanitized.Where(c => allowedChars.Contains(c)).ToArray());
+        
+        // Limit length to prevent buffer overflow attacks
+        const int maxLength = 200;
+        if (sanitized.Length > maxLength)
+        {
+            sanitized = sanitized.Substring(0, maxLength);
+        }
+        
+        return sanitized;
     }
 }
 

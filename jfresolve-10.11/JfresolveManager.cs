@@ -45,8 +45,16 @@ public class JfresolveManager
     private readonly ConcurrentDictionary<Guid, (object Metadata, DateTime Added)> _metadataCache;
     private readonly SemaphoreSlim _insertLock = new(1, 1);
     private readonly ConcurrentDictionary<Guid, DateTime> _syncCache = new();
-    private readonly ConcurrentDictionary<Guid, SemaphoreSlim> _itemLocks = new();
-    private readonly ConcurrentDictionary<string, SemaphoreSlim> _pathLocks = new();
+    
+    // Item locks: track SemaphoreSlim with last usage time for cleanup
+    // Key: item ID, Value: (SemaphoreSlim, LastUsedTime)
+    private readonly ConcurrentDictionary<Guid, (SemaphoreSlim Lock, DateTime LastUsed)> _itemLocks = new();
+    private static DateTime _lastItemLockCleanup = DateTime.UtcNow;
+    
+    // Path locks: track SemaphoreSlim with last usage time for cleanup
+    // Key: file path, Value: (SemaphoreSlim, LastUsedTime)
+    private readonly ConcurrentDictionary<string, (SemaphoreSlim Lock, DateTime LastUsed)> _pathLocks = new();
+    private static DateTime _lastPathLockCleanup = DateTime.UtcNow;
     
     // Folder lookup cache: caches folder references to reduce database queries
     // Key: folder path, Value: (Folder, ExpiryTime)
@@ -698,16 +706,19 @@ public class JfresolveManager
         // This prevents different quality versions (which share TMDB/IMDB IDs) from matching each other.
         if (providerIds.TryGetValue("Jfresolve", out var jfId))
         {
+            // OPTIMIZED: Use HasAnyProviderId with just the Jfresolve ID to let the database filter
+            // This is much more efficient than fetching all items and filtering in memory
             var jfQuery = new InternalItemsQuery
             {
                 IncludeItemTypes = new[] { kind },
                 Recursive = true,
-                IsDeadPerson = true
+                HasAnyProviderId = new Dictionary<string, string> { { "Jfresolve", jfId } },
+                IsDeadPerson = true,
             };
 
-            // Search specifically for items that have THIS Jfresolve ID
-            var items = _libraryManager.GetItemList(jfQuery);
-            var match = items.FirstOrDefault(i => i.ProviderIds.TryGetValue("Jfresolve", out var existingId) && existingId == jfId);
+            // Database will filter by Jfresolve ID, so we can directly get the first result
+            // This is a single optimized query instead of fetching all items and filtering in memory
+            var match = _libraryManager.GetItemList(jfQuery).FirstOrDefault();
 
             // If we found a match by Jfresolve ID, return it.
             // If we have a Jfresolve ID but NO match was found, STOP HERE and return null.
@@ -1004,12 +1015,23 @@ private async Task SaveImageWithRetry(BaseItem item, string url, ImageType image
 
     private async Task SaveImageToLocation(byte[] data, string path, CancellationToken ct)
     {
+        // Cleanup old locks periodically
+        CleanupPathLocksIfNeeded();
+        
         // Get or create a lock for this specific file path to prevent concurrent writes
-        var pathLock = _pathLocks.GetOrAdd(path, _ => new SemaphoreSlim(1, 1));
+        var lockEntry = _pathLocks.GetOrAdd(path, _ => (new SemaphoreSlim(1, 1), DateTime.UtcNow));
+        var pathLock = lockEntry.Lock;
+        
         await pathLock.WaitAsync(ct);
-
+        
         try
         {
+            // Update last used time (after acquiring lock to ensure we have latest value)
+            var now = DateTime.UtcNow;
+            _pathLocks.AddOrUpdate(path, 
+                (new SemaphoreSlim(1, 1), now), 
+                (key, oldValue) => (oldValue.Lock, now));
+
             // Ensure directory exists
             var directory = Path.GetDirectoryName(path);
             if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
@@ -1027,31 +1049,65 @@ private async Task SaveImageWithRetry(BaseItem item, string url, ImageType image
 
 private async Task SaveImagesForItem(BaseItem item, TmdbMovie meta, CancellationToken ct)
 {
+    // Save images independently - if one fails, continue with the other
     var poster = meta.GetPosterUrl();
     if (!string.IsNullOrWhiteSpace(poster))
     {
-        await SaveImageWithRetry(item, poster, ImageType.Primary, ct);
+        try
+        {
+            await SaveImageWithRetry(item, poster, ImageType.Primary, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Jfresolve: Failed to save poster image for '{Name}', continuing with backdrop", item.Name);
+            // Continue with backdrop even if poster fails
+        }
     }
 
     var backdrop = meta.GetBackdropUrl();
     if (!string.IsNullOrWhiteSpace(backdrop))
     {
-        await SaveImageWithRetry(item, backdrop, ImageType.Backdrop, ct);
+        try
+        {
+            await SaveImageWithRetry(item, backdrop, ImageType.Backdrop, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Jfresolve: Failed to save backdrop image for '{Name}'", item.Name);
+            // Don't throw - partial success is better than complete failure
+        }
     }
 }
 
 private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, CancellationToken ct)
 {
+    // Save images independently - if one fails, continue with the other
     var poster = meta.GetPosterUrl();
     if (!string.IsNullOrWhiteSpace(poster))
     {
-        await SaveImageWithRetry(item, poster, ImageType.Primary, ct);
+        try
+        {
+            await SaveImageWithRetry(item, poster, ImageType.Primary, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Jfresolve: Failed to save poster image for '{Name}', continuing with backdrop", item.Name);
+            // Continue with backdrop even if poster fails
+        }
     }
 
     var backdrop = meta.GetBackdropUrl();
     if (!string.IsNullOrWhiteSpace(backdrop))
     {
-        await SaveImageWithRetry(item, backdrop, ImageType.Backdrop, ct);
+        try
+        {
+            await SaveImageWithRetry(item, backdrop, ImageType.Backdrop, ct);
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Jfresolve: Failed to save backdrop image for '{Name}'", item.Name);
+            // Don't throw - partial success is better than complete failure
+        }
     }
 }
 
@@ -1073,12 +1129,23 @@ private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, Cancellatio
             }
         }
 
+        // Cleanup old locks periodically
+        CleanupItemLocksIfNeeded();
+        
         // Get or create a lock for this specific item
-        var itemLock = _itemLocks.GetOrAdd(series.Id, _ => new SemaphoreSlim(1, 1));
+        var lockEntry = _itemLocks.GetOrAdd(series.Id, _ => (new SemaphoreSlim(1, 1), DateTime.UtcNow));
+        var itemLock = lockEntry.Lock;
+        
         await itemLock.WaitAsync(ct);
 
         try
         {
+            // Update last used time (after acquiring lock to ensure we have latest value)
+            var lockNow = DateTime.UtcNow;
+            _itemLocks.AddOrUpdate(series.Id, 
+                (new SemaphoreSlim(1, 1), lockNow), 
+                (key, oldValue) => (oldValue.Lock, lockNow));
+            
             // Re-check cache inside lock in case another thread just finished
             if (_syncCache.TryGetValue(series.Id, out lastSync))
             {
@@ -1412,6 +1479,136 @@ private async Task SaveImagesForItem(BaseItem item, TmdbTvShow meta, Cancellatio
     {
         _folderCache.Clear();
         _lastFolderCacheCleanup = DateTime.UtcNow;
+    }
+
+    /// <summary>
+    /// Cleans up unused item locks to prevent memory leaks
+    /// </summary>
+    private void CleanupItemLocksIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Force cleanup if cache is too large
+        bool forceCleanup = _itemLocks.Count > Constants.MaxItemLocks;
+        
+        // Only run cleanup periodically to avoid performance impact (unless forced)
+        if (!forceCleanup && now - _lastItemLockCleanup < Constants.LockCleanupInterval)
+        {
+            return;
+        }
+
+        _lastItemLockCleanup = now;
+        var cutoffTime = now - Constants.LockMaxIdleTime;
+        var keysToRemove = new List<Guid>();
+        int disposedCount = 0;
+
+        // Find locks that haven't been used recently
+        foreach (var kvp in _itemLocks)
+        {
+            if (kvp.Value.LastUsed < cutoffTime || forceCleanup)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        // If forced cleanup and still too large, remove oldest entries
+        if (forceCleanup && _itemLocks.Count > Constants.MaxItemLocks)
+        {
+            var sortedByLastUsed = _itemLocks
+                .OrderBy(kvp => kvp.Value.LastUsed)
+                .Take(_itemLocks.Count - Constants.MaxItemLocks)
+                .Select(kvp => kvp.Key);
+            
+            keysToRemove.AddRange(sortedByLastUsed);
+        }
+
+        // Remove and dispose locks
+        foreach (var key in keysToRemove)
+        {
+            if (_itemLocks.TryRemove(key, out var lockEntry))
+            {
+                try
+                {
+                    lockEntry.Lock.Dispose();
+                    disposedCount++;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Jfresolve: Error disposing item lock for {Key}", key);
+                }
+            }
+        }
+
+        if (disposedCount > 0)
+        {
+            _log.LogDebug("Jfresolve: Cleaned up {Count} unused item locks (remaining: {Remaining})", 
+                disposedCount, _itemLocks.Count);
+        }
+    }
+
+    /// <summary>
+    /// Cleans up unused path locks to prevent memory leaks
+    /// </summary>
+    private void CleanupPathLocksIfNeeded()
+    {
+        var now = DateTime.UtcNow;
+        
+        // Force cleanup if cache is too large
+        bool forceCleanup = _pathLocks.Count > Constants.MaxPathLocks;
+        
+        // Only run cleanup periodically to avoid performance impact (unless forced)
+        if (!forceCleanup && now - _lastPathLockCleanup < Constants.LockCleanupInterval)
+        {
+            return;
+        }
+
+        _lastPathLockCleanup = now;
+        var cutoffTime = now - Constants.LockMaxIdleTime;
+        var keysToRemove = new List<string>();
+        int disposedCount = 0;
+
+        // Find locks that haven't been used recently
+        foreach (var kvp in _pathLocks)
+        {
+            if (kvp.Value.LastUsed < cutoffTime || forceCleanup)
+            {
+                keysToRemove.Add(kvp.Key);
+            }
+        }
+
+        // If forced cleanup and still too large, remove oldest entries
+        if (forceCleanup && _pathLocks.Count > Constants.MaxPathLocks)
+        {
+            var sortedByLastUsed = _pathLocks
+                .OrderBy(kvp => kvp.Value.LastUsed)
+                .Take(_pathLocks.Count - Constants.MaxPathLocks)
+                .Select(kvp => kvp.Key);
+            
+            keysToRemove.AddRange(sortedByLastUsed);
+        }
+
+        // Remove and dispose locks
+        foreach (var key in keysToRemove)
+        {
+            if (_pathLocks.TryRemove(key, out var lockEntry))
+            {
+                try
+                {
+                    lockEntry.Lock.Dispose();
+                    disposedCount++;
+                }
+                catch (Exception ex)
+                {
+                    _log.LogWarning(ex, "Jfresolve: Error disposing path lock for {Key}", key);
+                }
+            }
+        }
+
+        if (disposedCount > 0)
+        {
+            _log.LogDebug("Jfresolve: Cleaned up {Count} unused path locks (remaining: {Remaining})", 
+                disposedCount, _pathLocks.Count);
+        }
     }
 
     // ============ DELETE SUPPORT ============

@@ -25,6 +25,9 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
+        // Register circuit breaker factory
+        services.AddSingleton<Services.CircuitBreakerFactory>();
+
         // Register core services
         services.AddSingleton<TmdbService>();
         services.AddSingleton<JfresolveManager>();
