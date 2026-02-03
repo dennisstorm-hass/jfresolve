@@ -37,6 +37,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<InsertActionFilter>();
         services.AddSingleton<ImageResourceFilter>();
         services.AddSingleton<DeleteResourceFilter>();
+        services.AddSingleton<ItemDtoFilter>();
 
         // Register scheduled tasks
         services.AddSingleton<PurgeJfresolveTask>();
@@ -83,6 +84,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
             options.Filters.AddService<InsertActionFilter>(order: 2);
             options.Filters.AddService<ImageResourceFilter>(order: 4);
             options.Filters.AddService<DeleteResourceFilter>(order: 5);
+            options.Filters.AddService<ItemDtoFilter>(order: 10);
         });
     }
 }

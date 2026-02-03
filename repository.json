@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.33",
+        "changelog": "Feature: Enable deletion of virtual items in Jellyfin UI. Added ItemDtoFilter that intercepts item DTOs returned to the UI and marks Jfresolve items as deletable using reflection to set deletability-related properties (CanDelete, HasPath, IsVirtualItem) if they exist. This makes the delete button appear in the Jellyfin interface for Jfresolve items, allowing users to remove series/episodes/movies from virtual libraries directly from the UI. Works alongside the existing DeleteResourceFilter which handles the actual deletion.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.33/jfresolve.zip",
+        "checksum": "b145f72d5a51cddf7334a55145f49c52",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T11:03:21Z"
+      },
+      {
         "version": "1.0.0.32",
         "changelog": "Code quality improvements: Extracted HttpClient configuration magic numbers to Constants.cs for better maintainability. Refactored ResolveStream method by extracting validation logic into ValidateAndSanitizeResolveStreamInputs and redirect URL resolution into ResolveRedirectUrlAsync, making the code more modular and easier to maintain. The main ResolveStream method is now significantly shorter and more readable. Completed improvements from IMPROVEMENTS.md items 1-5, 10-13.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.32/jfresolve.zip",
