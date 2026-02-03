@@ -47,8 +47,16 @@ public sealed class ItemDtoFilter : IAsyncResultFilter, IOrderedFilter
     {
         await next();
 
-        // Only process successful results that return item DTOs
-        if (ctx.Result is not OkObjectResult okResult)
+        // Process successful results that return item DTOs
+        // Handle both OkObjectResult and ObjectResult (some endpoints use ObjectResult)
+        ObjectResult? objectResult = ctx.Result switch
+        {
+            OkObjectResult ok => ok,
+            ObjectResult obj => obj,
+            _ => null
+        };
+
+        if (objectResult == null || objectResult.Value == null)
             return;
 
         // Get the current user from context
@@ -61,14 +69,14 @@ public sealed class ItemDtoFilter : IAsyncResultFilter, IOrderedFilter
             return;
 
         // Handle single item DTO
-        if (okResult.Value is BaseItemDto singleDto)
+        if (objectResult.Value is BaseItemDto singleDto)
         {
             MarkAsDeletableIfJfresolve(singleDto, user);
             return;
         }
 
         // Handle QueryResult<BaseItemDto> (list of items)
-        if (okResult.Value is QueryResult<BaseItemDto> queryResult && queryResult.Items != null)
+        if (objectResult.Value is QueryResult<BaseItemDto> queryResult && queryResult.Items != null)
         {
             foreach (var dto in queryResult.Items)
             {
@@ -78,7 +86,7 @@ public sealed class ItemDtoFilter : IAsyncResultFilter, IOrderedFilter
         }
 
         // Handle array/list of BaseItemDto
-        if (okResult.Value is System.Collections.IEnumerable enumerable)
+        if (objectResult.Value is System.Collections.IEnumerable enumerable)
         {
             foreach (var item in enumerable)
             {

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.34",
+        "changelog": "Fix: Resolved 'retrieving additional data' hang during subtitle loading. Overrode GetMediaSource method to populate MediaStreams from database before returning MediaSourceInfo. This ensures that when Jellyfin calls GetMediaSource during playback initialization, all stream information (including subtitles) is already available, preventing additional probing that caused the hang. Also improved ItemDtoFilter to handle both OkObjectResult and ObjectResult response types for better compatibility across different Jellyfin API endpoints.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.34/jfresolve.zip",
+        "checksum": "ef640f02e3ba7b58076c68cae994bdba",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-03T11:12:57Z"
+      },
+      {
         "version": "1.0.0.33",
         "changelog": "Feature: Enable deletion of virtual items in Jellyfin UI. Added ItemDtoFilter that intercepts item DTOs returned to the UI and marks Jfresolve items as deletable using reflection to set deletability-related properties (CanDelete, HasPath, IsVirtualItem) if they exist. This makes the delete button appear in the Jellyfin interface for Jfresolve items, allowing users to remove series/episodes/movies from virtual libraries directly from the UI. Works alongside the existing DeleteResourceFilter which handles the actual deletion.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.33/jfresolve.zip",

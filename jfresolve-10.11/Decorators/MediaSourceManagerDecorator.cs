@@ -534,8 +534,42 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     public IReadOnlyList<MediaAttachment> GetMediaAttachments(MediaAttachmentQuery query) => _inner.GetMediaAttachments(query);
 
-    public Task<MediaSourceInfo> GetMediaSource(BaseItem item, string mediaSourceId, string? liveStreamId, bool enablePathSubstitution, CancellationToken cancellationToken)
-        => _inner.GetMediaSource(item, mediaSourceId, liveStreamId, enablePathSubstitution, cancellationToken);
+    public async Task<MediaSourceInfo> GetMediaSource(BaseItem item, string mediaSourceId, string? liveStreamId, bool enablePathSubstitution, CancellationToken cancellationToken)
+    {
+        var source = await _inner.GetMediaSource(item, mediaSourceId, liveStreamId, enablePathSubstitution, cancellationToken);
+        
+        // Ensure MediaStreams are populated from database to prevent "retrieving additional data" hang
+        // This is critical during playback initialization when Jellyfin calls GetMediaSource
+        if (IsJfresolve(item))
+        {
+            var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
+            if (dbStreams.Any())
+            {
+                var hasSubtitleStreams = dbStreams.Any(s => s.Type == MediaStreamType.Subtitle);
+                var sourceHasSubtitleStreams = source.MediaStreams?.Any(s => s.Type == MediaStreamType.Subtitle) ?? false;
+                
+                // If database has subtitle streams but source doesn't, populate from database
+                // This prevents Jellyfin from doing additional probing ("retrieving additional data" hang)
+                if (hasSubtitleStreams && !sourceHasSubtitleStreams)
+                {
+                    source.MediaStreams = dbStreams;
+                    _log.LogDebug("Jfresolve: Populated GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} to prevent additional probing", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
+                }
+                // If source has no streams at all, populate from database
+                else if (source.MediaStreams == null || !source.MediaStreams.Any())
+                {
+                    source.MediaStreams = dbStreams;
+                    _log.LogDebug("Jfresolve: Populated GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
+                }
+            }
+            
+            ApplyTrick(source);
+        }
+        
+        return source;
+    }
 
     public Task<LiveStreamResponse> OpenLiveStream(LiveStreamRequest request, CancellationToken cancellationToken)
         => _inner.OpenLiveStream(request, cancellationToken);
