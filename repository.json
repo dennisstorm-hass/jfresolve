@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.37",
+        "changelog": "Fix: Added error handling for database access to prevent SQLite errors from breaking playback. Wrapped all GetMediaStreams calls in try-catch blocks to gracefully handle database access failures. Created MergeStreamsPreservingObjects method that preserves existing stream objects when they match database streams, used in GetMediaSource to maintain client tracking for subtitle offset functionality. This should fix SQLite Error 5 database errors and improve subtitle offset control responsiveness. Note: Subtitle offset control may still require further investigation if issues persist.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.37/jfresolve.zip",
+        "checksum": "1eedf17143b161ce46e4fda096e508e0",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-05T07:49:39Z"
+      },
+      {
         "version": "1.0.0.36",
         "changelog": "Fix: Improved subtitle sync and offset functionality during transcoding. Updated MergeStreamsPreservingIndices to use database streams as the source of truth, ensuring consistent stream indices and correct timing information. Database streams (from probing) maintain consistent indices that the client uses for subtitle offset control. Modified GetMediaSource to always merge database streams when available, ensuring stream indices remain consistent across all calls. This should fix subtitle offset control responsiveness. Note: 1-2 second early timing after resume may still occur due to transcoding timing synchronization, which may require further investigation.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.36/jfresolve.zip",
