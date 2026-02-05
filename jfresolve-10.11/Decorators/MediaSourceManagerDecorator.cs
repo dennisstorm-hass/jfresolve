@@ -555,32 +555,42 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     {
         var source = await _inner.GetMediaSource(item, mediaSourceId, liveStreamId, enablePathSubstitution, cancellationToken);
         
-        // Ensure MediaStreams are populated from database to prevent "retrieving additional data" hang
-        // This is critical during playback initialization when Jellyfin calls GetMediaSource
-        // Preserve existing stream objects when possible to maintain client tracking for subtitle offset
+        // CRITICAL: Don't modify MediaStreams in GetMediaSource during active playback
+        // The client tracks streams for subtitle offset control, and modifying them breaks that tracking
+        // Only ensure MediaStreams exist if they're completely missing (initial playback setup)
+        // During transcoding/resume, Jellyfin calls GetMediaSource repeatedly - we must preserve streams exactly as-is
         if (IsJfresolve(item))
         {
-            try
+            // Only populate streams if they're completely missing (prevents "retrieving additional data" hang on first playback)
+            // But don't modify existing streams - this breaks subtitle offset control
+            if (source.MediaStreams == null || !source.MediaStreams.Any())
             {
-                var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
-                if (dbStreams.Any())
+                try
                 {
-                    // Merge streams intelligently, preserving existing stream objects when they match
-                    // This is critical for subtitle offset functionality - client tracks streams by object reference
-                    source.MediaStreams = MergeStreamsPreservingObjects(source.MediaStreams, dbStreams);
-                    _log.LogDebug("Jfresolve: Merged GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
-                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
+                    var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
+                    if (dbStreams.Any())
+                    {
+                        // Only set streams if they're completely missing
+                        source.MediaStreams = dbStreams;
+                        _log.LogDebug("Jfresolve: Populated GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} - streams were missing", 
+                            dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
+                    }
+                    else
+                    {
+                        _log.LogWarning("Jfresolve: No database streams found for {Name} in GetMediaSource - item may need probing", item.Name);
+                    }
                 }
-                // If no database streams, keep existing streams (shouldn't happen after probing, but be safe)
-                else if (source.MediaStreams == null || !source.MediaStreams.Any())
+                catch (Exception ex)
                 {
-                    _log.LogWarning("Jfresolve: No database streams found for {Name} in GetMediaSource - item may need probing", item.Name);
+                    // Log but don't fail - database access errors shouldn't break playback
+                    _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} in GetMediaSource, continuing without streams", item.Name);
                 }
             }
-            catch (Exception ex)
+            else
             {
-                // Log but don't fail - database access errors shouldn't break playback
-                _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} in GetMediaSource, using existing streams", item.Name);
+                // Streams already exist - don't modify them to preserve client tracking for subtitle offset
+                _log.LogDebug("Jfresolve: GetMediaSource for {Name} already has {Count} streams (including {SubtitleCount} subtitles) - preserving as-is for subtitle offset control", 
+                    item.Name, source.MediaStreams.Count, source.MediaStreams.Count(s => s.Type == MediaStreamType.Subtitle));
             }
             
             ApplyTrick(source);
