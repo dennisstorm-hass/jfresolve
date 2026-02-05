@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Jfresolve</AssemblyName>
     <RootNamespace>Jfresolve</RootNamespace>
-    <Version>1.0.0.38</Version>
-    <AssemblyVersion>1.0.0.38</AssemblyVersion>
-    <FileVersion>1.0.0.38</FileVersion>
+    <Version>1.0.0.39</Version>
+    <AssemblyVersion>1.0.0.39</AssemblyVersion>
+    <FileVersion>1.0.0.39</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

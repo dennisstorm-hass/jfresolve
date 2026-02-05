@@ -555,42 +555,32 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     {
         var source = await _inner.GetMediaSource(item, mediaSourceId, liveStreamId, enablePathSubstitution, cancellationToken);
         
-        // CRITICAL: Don't modify MediaStreams in GetMediaSource during active playback
-        // The client tracks streams for subtitle offset control, and modifying them breaks that tracking
-        // Only ensure MediaStreams exist if they're completely missing (initial playback setup)
-        // During transcoding/resume, Jellyfin calls GetMediaSource repeatedly - we must preserve streams exactly as-is
+        // Ensure MediaStreams are populated from database to prevent "retrieving additional data" hang
+        // This is critical during playback initialization when Jellyfin calls GetMediaSource
+        // Merge streams to keep subtitle sync, but preserve stream indices for subtitle offset control
         if (IsJfresolve(item))
         {
-            // Only populate streams if they're completely missing (prevents "retrieving additional data" hang on first playback)
-            // But don't modify existing streams - this breaks subtitle offset control
-            if (source.MediaStreams == null || !source.MediaStreams.Any())
+            try
             {
-                try
+                var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
+                if (dbStreams.Any())
                 {
-                    var dbStreams = _inner.GetMediaStreams(item.Id).ToList();
-                    if (dbStreams.Any())
-                    {
-                        // Only set streams if they're completely missing
-                        source.MediaStreams = dbStreams;
-                        _log.LogDebug("Jfresolve: Populated GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name} - streams were missing", 
-                            dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
-                    }
-                    else
-                    {
-                        _log.LogWarning("Jfresolve: No database streams found for {Name} in GetMediaSource - item may need probing", item.Name);
-                    }
+                    // Merge streams intelligently - use database streams as source of truth for timing
+                    // but preserve existing stream objects when they match by index/type to maintain client tracking
+                    source.MediaStreams = MergeStreamsPreservingObjects(source.MediaStreams, dbStreams);
+                    _log.LogDebug("Jfresolve: Merged GetMediaSource MediaStreams with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
+                        dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), item.Name);
                 }
-                catch (Exception ex)
+                // If no database streams, keep existing streams (shouldn't happen after probing, but be safe)
+                else if (source.MediaStreams == null || !source.MediaStreams.Any())
                 {
-                    // Log but don't fail - database access errors shouldn't break playback
-                    _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} in GetMediaSource, continuing without streams", item.Name);
+                    _log.LogWarning("Jfresolve: No database streams found for {Name} in GetMediaSource - item may need probing", item.Name);
                 }
             }
-            else
+            catch (Exception ex)
             {
-                // Streams already exist - don't modify them to preserve client tracking for subtitle offset
-                _log.LogDebug("Jfresolve: GetMediaSource for {Name} already has {Count} streams (including {SubtitleCount} subtitles) - preserving as-is for subtitle offset control", 
-                    item.Name, source.MediaStreams.Count, source.MediaStreams.Count(s => s.Type == MediaStreamType.Subtitle));
+                // Log but don't fail - database access errors shouldn't break playback
+                _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} in GetMediaSource, using existing streams", item.Name);
             }
             
             ApplyTrick(source);
@@ -634,9 +624,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         => _inner.AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, isLiveStream, cancellationToken);
     
     /// <summary>
-    /// Merge streams from database with existing streams, preserving existing stream objects when possible
-    /// This ensures subtitle streams maintain consistent object references for subtitle offset functionality
-    /// The client tracks streams by object reference, so we must preserve existing objects when they match
+    /// Merge streams from database with existing streams, preserving existing stream objects when indices match
+    /// CRITICAL: The client tracks subtitle streams by their Index property for offset control
+    /// We must preserve existing stream objects when indices match to maintain client tracking
+    /// Database streams are used only when indices don't match or streams are missing
     /// </summary>
     private IReadOnlyList<MediaStream> MergeStreamsPreservingObjects(IReadOnlyList<MediaStream>? existingStreams, IReadOnlyList<MediaStream> dbStreams)
     {
@@ -650,31 +641,33 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var merged = new List<MediaStream>();
         var usedIndices = new HashSet<int>();
         
-        // First, try to match existing streams with database streams by index and type
-        // Preserve existing stream objects when they match - client tracks by object reference
+        // CRITICAL: Preserve existing stream objects when indices match
+        // The client tracks subtitle streams by Index for offset control
+        // Replacing stream objects breaks this tracking even if indices are the same
         foreach (var existing in existingList)
         {
-            // Try to find matching database stream by index and type
+            // Check if database has a stream with matching index and type
             var matchingDbStream = dbList.FirstOrDefault(s => 
                 s.Index == existing.Index && 
                 s.Type == existing.Type);
             
             if (matchingDbStream != null)
             {
-                // Use existing stream object to preserve client tracking
-                // Update properties from database stream if needed, but keep the object reference
+                // Index and type match - preserve existing stream object to maintain client tracking
+                // The existing stream object is what the client is tracking for offset control
                 merged.Add(existing);
                 usedIndices.Add(existing.Index);
             }
             else
             {
-                // No match in database, keep existing stream
+                // No match in database - keep existing stream
                 merged.Add(existing);
                 usedIndices.Add(existing.Index);
             }
         }
         
         // Add any database streams that don't have matches in existing streams
+        // These are new streams that need to be added
         foreach (var dbStream in dbList)
         {
             if (!usedIndices.Contains(dbStream.Index))
@@ -685,6 +678,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
         
         // Sort by index to ensure consistent ordering
+        // This is critical - the client relies on consistent index ordering for subtitle offset control
         return merged.OrderBy(s => s.Index).ToList();
     }
     

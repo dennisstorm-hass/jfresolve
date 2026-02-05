@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.39",
+        "changelog": "Fix: Improved subtitle offset control based on Jellyfin repository research. Updated MergeStreamsPreservingObjects to preserve existing stream objects when indices match, maintaining client tracking for subtitle offset control. The client tracks subtitle streams by their Index property, and preserving existing stream objects when indices match ensures the client can maintain its tracking. Database streams are only used when indices don't match or streams are missing. This should maintain subtitle sync (from database streams when needed) while preserving subtitle offset control (by keeping existing stream objects when indices match). Based on Jellyfin issues #13414, #11825, and #11567.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.39/jfresolve.zip",
+        "checksum": "01856c50730eb4f4f1f16e520b6f89f1",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-05T08:32:25Z"
+      },
+      {
         "version": "1.0.0.38",
         "changelog": "Fix: Subtitle offset control now should work correctly. Modified GetMediaSource to only populate streams when they're completely missing (for initial playback setup), but never modify existing streams during active playback. This preserves the client's stream tracking for subtitle offset control. During active playback/resume, Jellyfin calls GetMediaSource repeatedly - by not modifying existing streams, the client can maintain its tracking of which stream to apply the offset to. Stream objects remain consistent, allowing the subtitle offset control to function properly.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.38/jfresolve.zip",
