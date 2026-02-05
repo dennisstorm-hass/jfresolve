@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.36",
+        "changelog": "Fix: Improved subtitle sync and offset functionality during transcoding. Updated MergeStreamsPreservingIndices to use database streams as the source of truth, ensuring consistent stream indices and correct timing information. Database streams (from probing) maintain consistent indices that the client uses for subtitle offset control. Modified GetMediaSource to always merge database streams when available, ensuring stream indices remain consistent across all calls. This should fix subtitle offset control responsiveness. Note: 1-2 second early timing after resume may still occur due to transcoding timing synchronization, which may require further investigation.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.36/jfresolve.zip",
+        "checksum": "184cb3df7f83fe08c07f60101b95d2fa",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-05T07:41:09Z"
+      },
+      {
         "version": "1.0.0.35",
         "changelog": "Fix: Resolved subtitle sync issues after pause/resume. Added MergeStreamsPreservingIndices method to intelligently merge streams from database with existing streams, preserving stream indices for subtitle offset functionality. Previously, completely replacing MediaStreams from the database changed stream indices, breaking the client's subtitle offset control. Now existing streams maintain their indices while missing subtitle streams are added from the database, ensuring subtitle offset works correctly after pause/resume operations.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.35/jfresolve.zip",
