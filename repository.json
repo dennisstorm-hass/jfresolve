@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.40",
+        "changelog": "Fix: Kodi (and other clients) dropping playback every 10–15 minutes. Stopped setting Content-Length on proxied stream responses so that when the client disconnects mid-stream, Kestrel no longer throws 'Content-Length mismatch: too few bytes written'. Responses now use chunked encoding; 206 and Content-Range are still sent. Added defensive catch for InvalidOperationException (Content-Length mismatch) so any remaining edge case is logged as a normal disconnect instead of an unhandled exception.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.40/jfresolve.zip",
+        "checksum": "00182f43b2e5daeb82c71710ff1af55e",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-06T12:12:00Z"
+      },
+      {
         "version": "1.0.0.39",
         "changelog": "Fix: Improved subtitle offset control based on Jellyfin repository research. Updated MergeStreamsPreservingObjects to preserve existing stream objects when indices match, maintaining client tracking for subtitle offset control. The client tracks subtitle streams by their Index property, and preserving existing stream objects when indices match ensures the client can maintain its tracking. Database streams are only used when indices don't match or streams are missing. This should maintain subtitle sync (from database streams when needed) while preserving subtitle offset control (by keeping existing stream objects when indices match). Based on Jellyfin issues #13414, #11825, and #11567.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.39/jfresolve.zip",

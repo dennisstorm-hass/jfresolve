@@ -992,6 +992,13 @@ public class JfresolveApiController : ControllerBase
                 return new EmptyResult();
             }
         }
+        catch (InvalidOperationException ioEx) when (ioEx.Message.Contains("Content-Length mismatch", StringComparison.OrdinalIgnoreCase))
+        {
+            // Client disconnected mid-stream after we had set Content-Length; Kestrel throws when we don't write all bytes.
+            // Treat as normal disconnect so it doesn't surface as an unhandled exception.
+            _logger.LogInformation(ioEx, "Jfresolve: Client disconnected during streaming for {RedirectUrl} (Content-Length mismatch)", redirectUrl);
+            return new EmptyResult();
+        }
         catch (Exception ex)
         {
             // Unexpected errors
@@ -1036,11 +1043,11 @@ public class JfresolveApiController : ControllerBase
                 // Set Content-Range header: "bytes start-end/total"
                 Response.Headers["Content-Range"] = $"bytes {start}-{end}/{totalLength.Value}";
                 
-                // Set Content-Length to the range size we'll actually send
-                Response.ContentLength = rangeLength;
-                
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
-                    start, end, totalLength.Value, rangeLength);
+                // Do not set Content-Length: clients (e.g. Kodi) may disconnect mid-stream; if we promise a length,
+                // Kestrel throws "Content-Length mismatch: too few bytes written" when they disconnect. Omit length
+                // so the response uses chunked encoding and disconnects are handled gracefully.
+                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total})", 
+                    start, end, totalLength.Value);
             }
             else if (rangeStart.HasValue)
             {
@@ -1071,14 +1078,9 @@ public class JfresolveApiController : ControllerBase
                     Response.Headers["Content-Range"] = contentRangeValue;
                 }
                 
-            // Only set Content-Length for range requests (206 Partial Content) where we know the exact range size
-            if (upstreamSupportsRange && 
-                streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
-                streamResponse.Content.Headers.ContentLength.HasValue)
-                {
-                // For 206 Partial Content, Content-Length represents the range size, which is safe to set
-                    Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
-                }
+            // Do not set Content-Length for 206 responses: when clients (e.g. Kodi) disconnect mid-stream
+            // (e.g. every 10–15 min), Kestrel would throw "Content-Length mismatch: too few bytes written".
+            // Omitting Content-Length uses chunked encoding so disconnects are handled without errors.
         }
 
         // Copy headers that might be important for streaming
