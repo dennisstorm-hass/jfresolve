@@ -9,6 +9,8 @@ public static class Constants
     public const int StreamBufferSize = 262144; // 256KB buffer for better throughput
     public const int StreamFlushInterval = 4; // Flush every 4 buffers (1MB chunks)
     public const int LegacyStreamBufferSize = 81920; // 80KB (kept for reference)
+    /// <summary>Max reconnects when upstream drops mid-stream (e.g. Real-Debrid ~10 min limit).</summary>
+    public const int MaxStreamReconnectAttempts = 15;
 
     // HTTP client timeouts
     public const int AddonRequestTimeoutSeconds = 30; // Timeout for Stremio addon requests

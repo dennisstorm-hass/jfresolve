@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.41",
+        "changelog": "Fix: Kodi/JellyCon playback dropouts and resume. Restored Content-Length on proxied responses so clients (e.g. Kodi) can resume via Range requests. On client disconnect we abort the connection to avoid Kestrel Content-Length mismatch. Transparent upstream reconnect: when the upstream (e.g. Real-Debrid) drops mid-stream (~10 min), the plugin reconnects from the current byte offset and continues streaming so playback is not interrupted. Up to 15 reconnects per stream. Added README troubleshooting for Kodi/JellyCon and code comment referencing JellyCon.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.41/jfresolve.zip",
+        "checksum": "09b6c5065397415c1fd964bbb55df033",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-06T14:00:00Z"
+      },
+      {
         "version": "1.0.0.40",
         "changelog": "Fix: Kodi (and other clients) dropping playback every 10–15 minutes. Stopped setting Content-Length on proxied stream responses so that when the client disconnects mid-stream, Kestrel no longer throws 'Content-Length mismatch: too few bytes written'. Responses now use chunked encoding; 206 and Content-Range are still sent. Added defensive catch for InvalidOperationException (Content-Length mismatch) so any remaining edge case is logged as a normal disconnect instead of an unhandled exception.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.40/jfresolve.zip",

@@ -147,6 +147,16 @@ Compiled DLL will be at:
 - Check Jellyfin logs for stream resolution errors.
 - For Jellyfin 10.11.6: Ensure you're using version 1.0.0.11 or later which includes compatibility fixes.
 
+### Kodi / JellyCon: playback drops every ~10 minutes (web player is fine)
+
+Playback via [JellyCon](https://github.com/jellyfin/jellycon) (Kodi) can stop after about 10 minutes while the same stream works in the Jellyfin web player. JellyCon does not implement custom streaming; it passes the play URL from Jellyfin to Kodi via `list_item.setPath(playurl)`, and Kodi’s player reads that URL. The difference is how Kodi handles the HTTP connection (e.g. timeouts or closing the connection) versus the browser. This plugin mitigates that by:
+
+- **Transparent reconnect**: If the upstream (e.g. Real-Debrid) or the connection drops mid-stream, the plugin reconnects from the current byte offset and continues streaming so the client sees one continuous stream.
+- **Resume-friendly responses**: The plugin sends `Content-Length` and supports `Range` so Kodi can resume with `Range: bytes=X-` when it reconnects.
+- **Clean disconnect handling**: On client disconnect the connection is aborted so the server does not log “Content-Length mismatch” errors.
+
+If dropouts persist, try the latest plugin version and check Jellyfin logs for “Reconnected at byte” messages (reconnect is working) or “Stream ended after upstream failure” (upstream or reconnect limit).
+
 ### Plugin fails to load in Jellyfin 10.11.6
 
 - Ensure you're using version 1.0.0.11 or later of this fork.

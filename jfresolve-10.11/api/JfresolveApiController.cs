@@ -10,11 +10,20 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jfresolve.Services;
+using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
 
 namespace Jfresolve.Api;
+
+/// <summary>Why the stream copy stopped.</summary>
+internal enum StreamStopReason
+{
+    Completed,
+    ClientDisconnect,
+    UpstreamFailure
+}
 
 /// <summary>
 /// API controller for Jfresolve plugin endpoints
@@ -941,9 +950,36 @@ public class JfresolveApiController : ControllerBase
             // Copy response headers
             CopyStreamResponseHeaders(finalStreamResponse, rangeHeader, rangeStart);
 
-            // Stream the content (with workaround for servers that don't support range requests)
-            // Pass cancellation token so streaming stops immediately when client disconnects
-            await StreamContentAsync(finalStreamResponse, type, id, rangeStart, cancellationToken);
+            // Build delegate to reconnect from byte offset when upstream drops mid-stream.
+            // Kodi/JellyCon (https://github.com/jellyfin/jellycon): JellyCon passes the play URL to Kodi via
+            // list_item.setPath(playurl); Kodi then opens that URL and reads the stream. Playback can drop
+            // every ~10 min on Kodi (upstream limit or Kodi closing the connection). Transparent reconnect
+            // keeps the stream alive without the client seeing an error.
+            string? urlForReconnect = finalUrl ?? redirectUrl;
+            Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null;
+            if (!string.IsNullOrEmpty(urlForReconnect))
+            {
+                getStreamFromOffset = async (offset) =>
+                {
+                    var req = new HttpRequestMessage(HttpMethod.Get, urlForReconnect);
+                    req.Headers.Add("Range", $"bytes={offset}-");
+                    var resp = await streamHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                    if (resp == null || !resp.IsSuccessStatusCode)
+                    {
+                        resp?.Dispose();
+                        return (null, null);
+                    }
+                    var stream = await resp.Content.ReadAsStreamAsync();
+                    return (stream, resp);
+                };
+            }
+
+            // Stream the content (with transparent reconnect when upstream drops)
+            var (_, stopReason) = await StreamContentAsync(finalStreamResponse, type, id, rangeStart, cancellationToken, getStreamFromOffset);
+            if (stopReason == StreamStopReason.UpstreamFailure)
+            {
+                _logger.LogWarning("Jfresolve: Stream ended after upstream failure for {Type}/{Id} (reconnect exhausted or unavailable)", type, id);
+            }
             
             return new EmptyResult();
         }
@@ -1043,11 +1079,11 @@ public class JfresolveApiController : ControllerBase
                 // Set Content-Range header: "bytes start-end/total"
                 Response.Headers["Content-Range"] = $"bytes {start}-{end}/{totalLength.Value}";
                 
-                // Do not set Content-Length: clients (e.g. Kodi) may disconnect mid-stream; if we promise a length,
-                // Kestrel throws "Content-Length mismatch: too few bytes written" when they disconnect. Omit length
-                // so the response uses chunked encoding and disconnects are handled gracefully.
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total})", 
-                    start, end, totalLength.Value);
+                // Set Content-Length so clients (e.g. Kodi) can resume via Range requests. On client disconnect we abort the connection to avoid Kestrel's Content-Length mismatch.
+                Response.ContentLength = rangeLength;
+                
+                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
+                    start, end, totalLength.Value, rangeLength);
             }
             else if (rangeStart.HasValue)
             {
@@ -1078,9 +1114,13 @@ public class JfresolveApiController : ControllerBase
                     Response.Headers["Content-Range"] = contentRangeValue;
                 }
                 
-            // Do not set Content-Length for 206 responses: when clients (e.g. Kodi) disconnect mid-stream
-            // (e.g. every 10–15 min), Kestrel would throw "Content-Length mismatch: too few bytes written".
-            // Omitting Content-Length uses chunked encoding so disconnects are handled without errors.
+            // Set Content-Length for 206 so clients can resume. On client disconnect we abort the connection to avoid Content-Length mismatch.
+            if (upstreamSupportsRange && 
+                streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
+                streamResponse.Content.Headers.ContentLength.HasValue)
+            {
+                Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+            }
         }
 
         // Copy headers that might be important for streaming
@@ -1097,149 +1137,171 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
-    /// Streams content from the HTTP response to the client response body
+    /// Aborts the current HTTP connection so Kestrel does not run Content-Length validation when the client disconnected mid-stream.
     /// </summary>
-    private async Task StreamContentAsync(HttpResponseMessage streamResponse, string type, string id, long? rangeStart, CancellationToken cancellationToken = default)
+    private void AbortConnection()
     {
-        // Optimized streaming: Use larger buffer and flush less frequently for better throughput
-        // Larger buffer reduces overhead from frequent system calls
-        // Periodic flushing (every N buffers) reduces flush overhead while maintaining responsiveness
+        try
+        {
+            HttpContext.Features.Get<IConnectionLifetimeFeature>()?.Abort();
+        }
+        catch
+        {
+            // Ignore: abort is best-effort to avoid Content-Length mismatch logging
+        }
+    }
+
+    /// <summary>
+    /// Streams content from the HTTP response to the client response body.
+    /// When upstream drops (timeout, connection reset), reconnects transparently so playback continues.
+    /// </summary>
+    private async Task<(long bytesWritten, StreamStopReason reason)> StreamContentAsync(
+        HttpResponseMessage streamResponse,
+        string type,
+        string id,
+        long? rangeStart,
+        CancellationToken cancellationToken,
+        Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null)
+    {
         const int bufferSize = Constants.StreamBufferSize;
         const int flushInterval = Constants.StreamFlushInterval;
         var buffer = new byte[bufferSize];
-        int bufferCount = 0;
-        
-        // Workaround for servers that don't support range requests
-        // If client requested a range but server returned 200 OK, skip bytes ourselves
-        bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
-        bool needToSkipBytes = rangeStart.HasValue && !upstreamSupportsRange;
-        long bytesToSkip = needToSkipBytes && rangeStart.HasValue ? rangeStart.Value : 0;
-        long bytesSkipped = 0;
-        
-        // ReadAsStreamAsync returns a stream that will be disposed when HttpResponseMessage is disposed
-        // The stream must be fully read before HttpResponseMessage disposal completes
-                using (var stream = await streamResponse.Content.ReadAsStreamAsync())
-                {
-            try
+        long totalBytesWritten = 0;
+        int reconnectCount = 0;
+        IDisposable? reconnectResponseToDispose = null;
+        try
+        {
+            bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
+            bool needToSkipBytes = rangeStart.HasValue && !upstreamSupportsRange;
+            long bytesToSkip = needToSkipBytes && rangeStart.HasValue ? rangeStart.Value : 0;
+            long bytesSkipped = 0;
+            Stream? stream = await streamResponse.Content.ReadAsStreamAsync();
+
+            while (true)
             {
-                // Skip bytes if upstream doesn't support range requests
-                if (needToSkipBytes)
+                try
                 {
-                    while (bytesSkipped < bytesToSkip && !cancellationToken.IsCancellationRequested)
+                    if (needToSkipBytes && stream != null)
                     {
-                        var remaining = bytesToSkip - bytesSkipped;
-                        var skipBufferSize = (int)Math.Min(bufferSize, remaining);
-                        var skipped = await stream.ReadAsync(buffer, 0, skipBufferSize, cancellationToken);
-                        if (skipped == 0)
+                        while (bytesSkipped < bytesToSkip && !cancellationToken.IsCancellationRequested)
                         {
-                            // Reached end of stream before skipping enough bytes
-                            _logger.LogWarning("Jfresolve: Reached end of stream while skipping bytes (requested: {Requested}, skipped: {Skipped})", bytesToSkip, bytesSkipped);
-                            break;
+                            var remaining = bytesToSkip - bytesSkipped;
+                            var skipBufferSize = (int)Math.Min(bufferSize, remaining);
+                            var skipped = await stream.ReadAsync(buffer.AsMemory(0, skipBufferSize), cancellationToken);
+                            if (skipped == 0)
+                            {
+                                _logger.LogWarning("Jfresolve: Reached end of stream while skipping bytes (requested: {Requested}, skipped: {Skipped})", bytesToSkip, bytesSkipped);
+                                break;
+                            }
+                            bytesSkipped += skipped;
                         }
-                        bytesSkipped += skipped;
+                        _logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
+                        needToSkipBytes = false;
                     }
-                    _logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
-                }
-                
+
+                    int bufferCount = 0;
                     int bytesRead;
-                while (!cancellationToken.IsCancellationRequested && 
-                       (bytesRead = await stream.ReadAsync(buffer, 0, buffer.Length, cancellationToken)) > 0)
+                    while (stream != null && !cancellationToken.IsCancellationRequested &&
+                           (bytesRead = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), cancellationToken)) > 0)
                     {
-                    await Response.Body.WriteAsync(buffer, 0, bytesRead, cancellationToken);
-                    bufferCount++;
-                    
-                    // Flush periodically to reduce overhead while maintaining low latency
-                    // Flush immediately on first buffer for quick start, then every N buffers
-                    if (bufferCount == 1 || bufferCount % flushInterval == 0)
-                    {
-                        await Response.Body.FlushAsync(cancellationToken);
+                        await Response.Body.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
+                        totalBytesWritten += bytesRead;
+                        bufferCount++;
+                        if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                            await Response.Body.FlushAsync(cancellationToken);
                     }
+
+                    if (!cancellationToken.IsCancellationRequested)
+                        await Response.Body.FlushAsync(cancellationToken);
+                    return (totalBytesWritten, StreamStopReason.Completed);
                 }
-                
-                // Final flush to ensure all data is sent (if not cancelled)
-                if (!cancellationToken.IsCancellationRequested)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    await Response.Body.FlushAsync(cancellationToken);
+                    _logger.LogInformation("Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    AbortConnection();
+                    return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                 }
-            }
-            catch (OperationCanceledException oce) when (oce.CancellationToken.IsCancellationRequested)
-            {
-                // Client disconnected (RequestAborted) - this is normal when user stops playback
-                // Log and exit gracefully - no need to throw or return error
-                _logger.LogInformation(
-                    "Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes",
-                    type, id, bufferCount * bufferSize);
-                // Don't throw - just exit, connection will close naturally
-            }
-            catch (TaskCanceledException tce) when (tce.InnerException is TimeoutException || tce.InnerException == null)
-            {
-                // HttpClient timeout during streaming - HttpClient throws TaskCanceledException on timeout
-                // This can happen if there's a long pause in data transfer (buffering, network hiccup)
-                // Log the timeout but don't treat it as a fatal error if response has started
-                if (Response.HasStarted)
+                catch (TaskCanceledException tce) when (tce.InnerException is TimeoutException || tce.InnerException == null)
                 {
-                    _logger.LogWarning(
-                        tce,
-                        "Jfresolve: HttpClient timeout during streaming for {Type}/{Id} after ~{Bytes} bytes (likely due to network pause or buffering). Connection may have been idle too long.",
-                        type, id, bufferCount * bufferSize);
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        AbortConnection();
+                        return (totalBytesWritten, StreamStopReason.ClientDisconnect);
+                    }
+                    if (!Response.HasStarted)
+                    {
+                        _logger.LogError(tce, "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}", type, id);
+                        throw;
+                    }
+                    _logger.LogWarning(tce, "Jfresolve: Upstream timeout during streaming for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    var (ok1, s1, d1, c1) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
+                    if (!ok1) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
+                    stream = s1; reconnectResponseToDispose = d1; reconnectCount = c1;
                 }
-                else
-        {
-                    _logger.LogError(
-                        tce,
-                        "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}",
-                        type, id);
-                    throw; // Re-throw if response hasn't started yet
-                }
-            }
-            catch (TimeoutException te)
-            {
-                // Direct timeout exception (less common with HttpClient)
-                if (Response.HasStarted)
+                catch (TimeoutException te)
                 {
-                    _logger.LogWarning(
-                        te,
-                        "Jfresolve: Timeout during streaming for {Type}/{Id} after ~{Bytes} bytes",
-                        type, id, bufferCount * bufferSize);
+                    if (cancellationToken.IsCancellationRequested) { AbortConnection(); return (totalBytesWritten, StreamStopReason.ClientDisconnect); }
+                    if (!Response.HasStarted) { _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id); throw; }
+                    _logger.LogWarning(te, "Jfresolve: Upstream timeout for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    var (ok2, s2, d2, c2) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
+                    if (!ok2) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
+                    stream = s2; reconnectResponseToDispose = d2; reconnectCount = c2;
                 }
-                else
-        {
-                    _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id);
-                    throw;
-                }
-            }
-            catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx && 
-                                             (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
-                                              socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
-            {
-                // Connection reset during streaming - this is normal when client pauses/disconnects
-                // Don't try to send error response as response has already started
-                // Just log and let the connection close naturally
-                _logger.LogInformation(
-                    "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
-                    type, id, bufferCount * bufferSize);
-                
-                // Check if response has started before trying to flush
-                if (!Response.HasStarted)
+                catch (IOException ioEx) when (ioEx.InnerException is System.Net.Sockets.SocketException socketEx &&
+                    (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset || socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown))
                 {
-                    await Response.Body.FlushAsync();
+                    if (cancellationToken.IsCancellationRequested || HttpContext.RequestAborted.IsCancellationRequested)
+                    {
+                        _logger.LogInformation("Jfresolve: Client disconnected for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                        AbortConnection();
+                        return (totalBytesWritten, StreamStopReason.ClientDisconnect);
+                    }
+                    _logger.LogInformation(ioEx, "Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    var (ok3, s3, d3, c3) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
+                    if (!ok3) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
+                    stream = s3; reconnectResponseToDispose = d3; reconnectCount = c3;
                 }
-            }
-            catch (System.Net.Sockets.SocketException socketEx) when 
-                (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset ||
-                 socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown)
-            {
-                // Connection reset during streaming
-                _logger.LogInformation(
-                    "Jfresolve: Connection reset during streaming for {Type}/{Id} (client likely paused/disconnected). Bytes streamed: ~{Bytes}",
-                    type, id, bufferCount * bufferSize);
-                
-                if (!Response.HasStarted)
+                catch (System.Net.Sockets.SocketException socketEx) when
+                    (socketEx.SocketErrorCode == System.Net.Sockets.SocketError.ConnectionReset || socketEx.SocketErrorCode == System.Net.Sockets.SocketError.Shutdown)
                 {
-                    await Response.Body.FlushAsync();
+                    if (cancellationToken.IsCancellationRequested || HttpContext.RequestAborted.IsCancellationRequested)
+                    {
+                        AbortConnection();
+                        return (totalBytesWritten, StreamStopReason.ClientDisconnect);
+                    }
+                    _logger.LogInformation(socketEx, "Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    var (ok4, s4, d4, c4) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
+                    if (!ok4) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
+                    stream = s4; reconnectResponseToDispose = d4; reconnectCount = c4;
                 }
             }
         }
+        finally
+        {
+            reconnectResponseToDispose?.Dispose();
+        }
+    }
+
+    /// <summary>Reconnect to upstream from the given offset. Returns (success, newStream, toDispose, newReconnectCount).</summary>
+    private async Task<(bool success, Stream? newStream, IDisposable? toDispose, int newReconnectCount)> TryReconnectAsync(
+        Stream? stream,
+        IDisposable? reconnectResponseToDispose,
+        int reconnectCount,
+        long? rangeStart,
+        long totalBytesWritten,
+        Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset)
+    {
+        if (getStreamFromOffset == null || reconnectCount >= Constants.MaxStreamReconnectAttempts)
+            return (false, null, null, reconnectCount);
+        stream?.Dispose();
+        reconnectResponseToDispose?.Dispose();
+        var offset = (rangeStart ?? 0) + totalBytesWritten;
+        var (newStream, toDispose) = await getStreamFromOffset(offset);
+        if (newStream == null)
+            return (false, null, null, reconnectCount);
+        reconnectCount++;
+        _logger.LogInformation("Jfresolve: Reconnected at byte {Offset} (reconnect {N}/{Max})", offset, reconnectCount, Constants.MaxStreamReconnectAttempts);
+        return (true, newStream, toDispose, reconnectCount);
     }
 
     /// <summary>
