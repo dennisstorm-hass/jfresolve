@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.47",
+        "changelog": "Fix: NullReferenceException in GetPlaybackMediaSources when user is null (e.g. HLS/transcode requests). Guard so userId is only appended to Path when user is non-null.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.47/jfresolve.zip",
+        "checksum": "ba1f2de5ef6e08166548632791e1e949",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-07T12:32:00Z"
+      },
+      {
         "version": "1.0.0.46",
         "changelog": "Fix: User playback preferences page (/Plugins/Jfresolve/user-settings/page) now correctly recognizes logged-in users via Jellyfin IAuthorizationContext, fixing 'Must be logged in' for non-admin users.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.46/jfresolve.zip",

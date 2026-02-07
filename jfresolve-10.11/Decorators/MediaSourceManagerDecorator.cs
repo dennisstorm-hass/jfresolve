@@ -258,12 +258,15 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
 
         // Append user id to resolve URLs so per-user preferences (e.g. prefer HDR over Dolby Vision) are applied
-        foreach (var info in sources)
+        if (user != null)
         {
-            if (!string.IsNullOrEmpty(info.Path) && info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+            foreach (var info in sources)
             {
-                var sep = info.Path.IndexOf('?') >= 0 ? "&" : "?";
-                info.Path += $"{sep}userId={user.Id:N}";
+                if (!string.IsNullOrEmpty(info.Path) && info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+                {
+                    var sep = info.Path.IndexOf('?') >= 0 ? "&" : "?";
+                    info.Path += $"{sep}userId={user.Id:N}";
+                }
             }
         }
 
