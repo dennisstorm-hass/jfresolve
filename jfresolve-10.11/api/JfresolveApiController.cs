@@ -1393,6 +1393,83 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
+    /// Serves a standalone HTML page for user playback preferences.
+    /// Non-admin users can open this URL directly (no Dashboard needed). Requires login.
+    /// </summary>
+    [HttpGet("user-settings/page")]
+    public IActionResult GetUserSettingsPage()
+    {
+        if (!TryGetCurrentUserId(out _))
+            return Unauthorized("Must be logged in to open this page");
+
+        var html = """
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jfresolve – Playback preferences</title>
+    <style>
+        body { font-family: system-ui, sans-serif; background: #1a1a1a; color: #eee; margin: 0; padding: 24px; }
+        .card { background: #252525; border-radius: 12px; padding: 24px; max-width: 520px; margin: 0 auto; border: 1px solid #333; }
+        h1 { margin: 0 0 20px; font-size: 1.5rem; color: #00a4dc; }
+        label { display: flex; align-items: center; gap: 10px; cursor: pointer; margin-bottom: 8px; }
+        input[type="checkbox"] { width: 18px; height: 18px; }
+        .hint { color: #aaa; font-size: 0.9em; margin: 8px 0 20px; line-height: 1.4; }
+        button { background: #00a4dc; color: #fff; border: none; padding: 10px 24px; border-radius: 8px; font-size: 1rem; cursor: pointer; }
+        button:hover { background: #0090c0; }
+        .msg { margin-top: 16px; font-size: 0.9em; }
+        .msg.ok { color: #4ade80; }
+        .msg.err { color: #f87171; }
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>Jfresolve – Playback preferences</h1>
+        <form id="form">
+            <label>
+                <input type="checkbox" id="preferHdr" />
+                <span>Prefer HDR over Dolby Vision</span>
+            </label>
+            <p class="hint">When enabled, at the same resolution the plugin picks HDR (e.g. HDR10) instead of Dolby Vision. Use if your player does not support Dolby Vision.</p>
+            <button type="submit">Save</button>
+        </form>
+        <p id="msg" class="msg" aria-live="polite"></p>
+    </div>
+    <script>
+        (function() {
+            var apiBase = location.origin + location.pathname.replace(/\/page\/?$/, '').replace(/\/$/, '');
+            var form = document.getElementById('form');
+            var preferHdr = document.getElementById('preferHdr');
+            var msg = document.getElementById('msg');
+            function show(m, ok) { msg.textContent = m; msg.className = 'msg ' + (ok ? 'ok' : 'err'); }
+            fetch(apiBase, { credentials: 'include' })
+                .then(function(r) { if (!r.ok) throw new Error(r.status); return r.json(); })
+                .then(function(d) { preferHdr.checked = d.preferHdrOverDolbyVision !== false; })
+                .catch(function() { preferHdr.checked = true; });
+            form.onsubmit = function(e) {
+                e.preventDefault();
+                msg.textContent = '';
+                fetch(apiBase, {
+                    method: 'POST',
+                    credentials: 'include',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ preferHdrOverDolbyVision: preferHdr.checked })
+                }).then(function(r) {
+                    if (!r.ok) throw new Error(r.status);
+                    show('Settings saved.', true);
+                }).catch(function() { show('Failed to save. Are you logged in?', false); });
+                return false;
+            };
+        })();
+    </script>
+</body>
+</html>
+""";
+        return Content(html, "text/html; charset=utf-8");
+    }
+
+    /// <summary>
     /// Gets the current user's playback preferences (per-user settings).
     /// Requires authentication.
     /// </summary>
