@@ -1233,7 +1233,7 @@ public class JfresolveApiController : ControllerBase
                         _logger.LogError(tce, "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}", type, id);
                         throw;
                     }
-                    _logger.LogWarning(tce, "Jfresolve: Upstream timeout during streaming for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    _logger.LogWarning("Jfresolve: Upstream timeout during streaming for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok1, s1, d1, c1) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok1) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s1; reconnectResponseToDispose = d1; reconnectCount = c1;
@@ -1242,7 +1242,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     if (cancellationToken.IsCancellationRequested) { AbortConnection(); return (totalBytesWritten, StreamStopReason.ClientDisconnect); }
                     if (!Response.HasStarted) { _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id); throw; }
-                    _logger.LogWarning(te, "Jfresolve: Upstream timeout for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    _logger.LogWarning("Jfresolve: Upstream timeout for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok2, s2, d2, c2) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok2) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s2; reconnectResponseToDispose = d2; reconnectCount = c2;
@@ -1256,7 +1256,7 @@ public class JfresolveApiController : ControllerBase
                         AbortConnection();
                         return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                     }
-                    _logger.LogInformation(ioEx, "Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    _logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok3, s3, d3, c3) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok3) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s3; reconnectResponseToDispose = d3; reconnectCount = c3;
@@ -1269,7 +1269,7 @@ public class JfresolveApiController : ControllerBase
                         AbortConnection();
                         return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                     }
-                    _logger.LogInformation(socketEx, "Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    _logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok4, s4, d4, c4) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok4) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s4; reconnectResponseToDispose = d4; reconnectCount = c4;
