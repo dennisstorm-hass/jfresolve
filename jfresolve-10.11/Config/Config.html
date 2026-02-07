@@ -586,6 +586,27 @@
                                         version/index is unavailable.
                                     </div>
                                 </div>
+
+                                <div class="checkboxContainer field-group">
+                                    <label
+                                        class="emby-checkbox-label"
+                                        for="PreferHdrOverDolbyVision"
+                                    >
+                                        <input
+                                            type="checkbox"
+                                            is="emby-checkbox"
+                                            id="PreferHdrOverDolbyVision"
+                                        />
+                                        <span class="checkbox-label-text"
+                                            >Prefer HDR over Dolby Vision</span
+                                        >
+                                    </label>
+                                    <div class="field-description">
+                                        Default for all users. Each user can override
+                                        this in their own playback preferences (Dashboard
+                                        → Plugins → Jfresolve → User playback preferences).
+                                    </div>
+                                </div>
                             </div>
 
                             <!-- TMDB & Population -->
@@ -970,6 +991,10 @@
                                 config.EnableSearch !== false;
                             document.getElementById("PreferredQuality").value =
                                 config.PreferredQuality || "Auto";
+                            document.getElementById(
+                                "PreferHdrOverDolbyVision",
+                            ).checked =
+                                config.PreferHdrOverDolbyVision !== false;
 
                             // Path Mode
                             var pathMode =
@@ -1118,6 +1143,10 @@
                                 document.getElementById(
                                     "PreferredQuality",
                                 ).value;
+                            config.PreferHdrOverDolbyVision =
+                                document.getElementById(
+                                    "PreferHdrOverDolbyVision",
+                                ).checked;
                             config.PathMode = parseInt(
                                 document.getElementById("PathMode").value,
                             );

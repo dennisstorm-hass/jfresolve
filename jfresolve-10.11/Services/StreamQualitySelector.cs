@@ -26,7 +26,8 @@ public class StreamQualitySelector
         JsonElement streams,
         string preferredQuality,
         string? requestedQuality = null,
-        int? requestedIndex = null)
+        int? requestedIndex = null,
+        bool preferHdrOverDolbyVision = false)
     {
         var streamArray = streams.EnumerateArray().ToList();
         if (streamArray.Count == 0)
@@ -35,7 +36,7 @@ public class StreamQualitySelector
         // If a specific quality is requested (Virtual Versioning), filter and pick by index
         if (!string.IsNullOrEmpty(requestedQuality))
         {
-            var filteredStreams = FilterStreamsByQuality(streamArray, requestedQuality);
+            var filteredStreams = FilterStreamsByQuality(streamArray, requestedQuality, preferHdrOverDolbyVision);
             if (filteredStreams.Count > 0)
             {
                 var idx = requestedIndex ?? 0;
@@ -56,11 +57,11 @@ public class StreamQualitySelector
         // Discovery logic (Discovery mode or fallback)
         if (preferredQuality.Equals("Auto", StringComparison.OrdinalIgnoreCase))
         {
-            return SelectHighestQualityStream(streamArray);
+            return SelectHighestQualityStream(streamArray, preferHdrOverDolbyVision);
         }
 
         // Try to find exact match for preferred quality
-        var matchedStream = FindStreamByQuality(streamArray, preferredQuality);
+        var matchedStream = FindStreamByQuality(streamArray, preferredQuality, preferHdrOverDolbyVision);
         if (matchedStream != null)
         {
             _logger.LogInformation("Jfresolve: Selected {Quality} stream (discovery match)", preferredQuality);
@@ -69,13 +70,14 @@ public class StreamQualitySelector
 
         // Fallback: select highest quality if preferred not found
         _logger.LogInformation("Jfresolve: Preferred quality {Quality} not found, selecting highest available", preferredQuality);
-        return SelectHighestQualityStream(streamArray);
+        return SelectHighestQualityStream(streamArray, preferHdrOverDolbyVision);
     }
 
     /// <summary>
-    /// Filters streams list to only those containing the specified quality indicators
+    /// Filters streams list to only those containing the specified quality indicators.
+    /// When preferHdrOverDolbyVision is true, sorts so HDR (non-DV) streams come before Dolby Vision.
     /// </summary>
-    public List<JsonElement> FilterStreamsByQuality(List<JsonElement> streams, string quality)
+    public List<JsonElement> FilterStreamsByQuality(List<JsonElement> streams, string quality, bool preferHdrOverDolbyVision = false)
     {
         var indicators = GetQualityIndicators(quality);
         var results = new List<JsonElement>();
@@ -89,45 +91,60 @@ public class StreamQualitySelector
             }
         }
 
+        if (preferHdrOverDolbyVision && results.Count > 1)
+        {
+            results = results.OrderBy(s => StreamContainsDolbyVision(s) ? 1 : 0).ToList();
+        }
+
         return results;
     }
 
     /// <summary>
-    /// Finds a stream matching the specified quality preference
+    /// Finds a stream matching the specified quality preference.
+    /// When preferHdrOverDolbyVision is true, prefers HDR (non-DV) over Dolby Vision at the same resolution.
     /// </summary>
-    public JsonElement? FindStreamByQuality(List<JsonElement> streams, string quality)
+    public JsonElement? FindStreamByQuality(List<JsonElement> streams, string quality, bool preferHdrOverDolbyVision = false)
     {
         var qualityIndicators = GetQualityIndicators(quality);
+        JsonElement? dvFallback = null;
 
         foreach (var stream in streams)
         {
             var streamText = GetStreamText(stream);
 
-            // Check if any quality indicator is present in the stream text
             foreach (var indicator in qualityIndicators)
             {
-                if (streamText.Contains(indicator, StringComparison.OrdinalIgnoreCase))
+                if (!streamText.Contains(indicator, StringComparison.OrdinalIgnoreCase))
+                    continue;
+
+                if (preferHdrOverDolbyVision)
                 {
-                    return stream;
+                    if (StreamContainsDolbyVision(stream))
+                    {
+                        dvFallback ??= stream;
+                        continue;
+                    }
+                    return stream; // HDR or SDR, avoid DV when possible
                 }
+                return stream;
             }
         }
 
-        return null;
+        return dvFallback ?? null;
     }
 
     /// <summary>
     /// Selects the highest quality stream from the available streams
     /// Priority order: 4K/2160p > 1440p > 1080p > 720p > 480p > first available
+    /// When preferHdrOverDolbyVision is true, prefers HDR (non-DV) over Dolby Vision at each tier.
     /// </summary>
-    public JsonElement SelectHighestQualityStream(List<JsonElement> streams)
+    public JsonElement SelectHighestQualityStream(List<JsonElement> streams, bool preferHdrOverDolbyVision = false)
     {
-        // Try to find streams in order of quality preference
         var qualityPriority = Constants.QualityPriority;
 
         foreach (var quality in qualityPriority)
         {
-            var stream = FindStreamByQuality(streams, quality);
+            var stream = FindStreamByQuality(streams, quality, preferHdrOverDolbyVision);
             if (stream != null)
             {
                 _logger.LogInformation("Jfresolve: Auto-selected {Quality} stream (highest available)", quality);
@@ -135,7 +152,6 @@ public class StreamQualitySelector
             }
         }
 
-        // Fallback to first stream if no quality indicators found
         _logger.LogInformation("Jfresolve: No quality indicators found, using first stream");
         return streams[0];
     }
@@ -174,6 +190,29 @@ public class StreamQualitySelector
             text += title.GetString();
         }
 
+        return text;
+    }
+
+    /// <summary>
+    /// Returns true if the stream name/title indicates Dolby Vision (e.g. "Dolby Vision", "DV", "DoVi")
+    /// </summary>
+    private static bool StreamContainsDolbyVision(JsonElement stream)
+    {
+        var text = GetStreamTextPublic(stream);
+        return text.Contains("dolby vision", StringComparison.OrdinalIgnoreCase)
+            || text.Contains(" dolby vision", StringComparison.OrdinalIgnoreCase)
+            || text.Contains(".dv.", StringComparison.OrdinalIgnoreCase)
+            || text.Contains(" dv ", StringComparison.OrdinalIgnoreCase)
+            || text.Contains("dovi", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static string GetStreamTextPublic(JsonElement stream)
+    {
+        var text = string.Empty;
+        if (stream.TryGetProperty("name", out var name))
+            text += name.GetString() + " ";
+        if (stream.TryGetProperty("title", out var title))
+            text += title.GetString();
         return text;
     }
 }

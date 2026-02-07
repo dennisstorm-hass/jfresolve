@@ -33,5 +33,10 @@ public class JfresolvePlugin : BasePlugin<PluginConfiguration>, IHasWebPages
             Name = "config",
             EmbeddedResourcePath = prefix + ".Config.config.html",
         };
+        yield return new PluginPageInfo
+        {
+            Name = "user-settings",
+            EmbeddedResourcePath = prefix + ".Config.UserSettings.html",
+        };
     }
 }

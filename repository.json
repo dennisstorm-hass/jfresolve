@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.43",
+        "changelog": "Stream selection: Prefer HDR (e.g. HDR10) over Dolby Vision when both exist at the same resolution. Now a per-user setting: each user can set 'Prefer HDR over Dolby Vision' in Plugins → Jfresolve → User playback preferences; global default remains in plugin config. Use if your player does not support Dolby Vision and has no fallback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.43/jfresolve.zip",
+        "checksum": "40eefdf37ac8e7c95d158240260734bc",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-07T12:32:00Z"
+      },
+      {
         "version": "1.0.0.42",
         "changelog": "Logging: When upstream connection reset or timeout triggers transparent reconnect, log only the short message (no exception stack trace) to avoid log noise. Reconnect behavior unchanged.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.42/jfresolve.zip",

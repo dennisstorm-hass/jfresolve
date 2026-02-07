@@ -33,6 +33,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
         services.AddSingleton<Services.StreamQualitySelector>();
+        services.AddSingleton<Services.UserPreferencesService>();
         services.AddSingleton<SearchActionFilter>();
         services.AddSingleton<InsertActionFilter>();
         services.AddSingleton<ImageResourceFilter>();

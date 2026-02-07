@@ -257,6 +257,16 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             sources[0].Type = MediaSourceType.Default;
         }
 
+        // Append user id to resolve URLs so per-user preferences (e.g. prefer HDR over Dolby Vision) are applied
+        foreach (var info in sources)
+        {
+            if (!string.IsNullOrEmpty(info.Path) && info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+            {
+                var sep = info.Path.IndexOf('?') >= 0 ? "&" : "?";
+                info.Path += $"{sep}userId={user.Id:N}";
+            }
+        }
+
         _log.LogDebug("Jfresolve: Returning {Count} total playback sources", sources.Count);
         return sources;
     }

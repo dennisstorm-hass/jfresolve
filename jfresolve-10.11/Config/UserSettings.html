@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <title>Jfresolve – User playback preferences</title>
+</head>
+<body>
+    <div id="JfresolveUserSettingsPage" data-role="page" class="page type-interior pluginConfigurationPage"
+         data-require="emby-checkbox,emby-button">
+        <style>
+            .jfresolve-user-page { padding: 20px; color: #eee; max-width: 600px; }
+            .section-card { background: #1e1e1e; border-radius: 12px; padding: 24px; margin-bottom: 20px; border: 1px solid #333; }
+            .section-title { color: #00a4dc; margin-top: 0; margin-bottom: 16px; }
+            .field-description { color: #aaa; font-size: 0.9em; margin-top: 8px; line-height: 1.5; }
+            .checkbox-label-text { font-weight: 500; color: #eee; }
+        </style>
+        <div data-role="content">
+            <div class="content-primary">
+                <form id="JfresolveUserSettingsForm" class="jfresolve-user-page">
+                    <div class="verticalSection">
+                        <h2 class="sectionTitle" style="color: #fff; margin-bottom: 24px;">Jfresolve – Playback preferences</h2>
+                        <div class="section-card">
+                            <h3 class="section-title">Stream selection</h3>
+                            <div class="checkboxContainer" style="margin-bottom: 20px;">
+                                <label class="emby-checkbox-label" for="PreferHdrOverDolbyVision">
+                                    <input type="checkbox" is="emby-checkbox" id="PreferHdrOverDolbyVision" />
+                                    <span class="checkbox-label-text">Prefer HDR over Dolby Vision</span>
+                                </label>
+                                <div class="field-description">
+                                    When enabled, at the same resolution the plugin picks HDR (e.g. HDR10) instead of Dolby Vision.
+                                    Use if your player does not support Dolby Vision and has no fallback.
+                                </div>
+                            </div>
+                            <button is="emby-button" type="submit" class="raised block emby-button" style="background: #00a4dc; border-radius: 8px; padding: 10px 20px;">Save</button>
+                        </div>
+                    </div>
+                </form>
+            </div>
+        </div>
+        <script>
+            (function () {
+                var pluginId = "506F18B8-5DAD-4CD3-B9A0-F7ED933E9939";
+                var apiUrl = "Plugins/Jfresolve";
+
+                function load() {
+                    ApiClient.get(apiUrl + "/user-settings").then(function (r) {
+                        document.getElementById("PreferHdrOverDolbyVision").checked = r.preferHdrOverDolbyVision !== false;
+                    }).catch(function () {
+                        document.getElementById("PreferHdrOverDolbyVision").checked = true;
+                    });
+                }
+
+                document.getElementById("JfresolveUserSettingsPage").addEventListener("pageshow", function () {
+                    load();
+                });
+
+                document.getElementById("JfresolveUserSettingsForm").addEventListener("submit", function (e) {
+                    e.preventDefault();
+                    ApiClient.ajax({
+                        type: "POST",
+                        url: ApiClient.getUrl(apiUrl + "/user-settings"),
+                        data: JSON.stringify({
+                            preferHdrOverDolbyVision: document.getElementById("PreferHdrOverDolbyVision").checked
+                        }),
+                        contentType: "application/json"
+                    }).then(function () {
+                        require(["toast"], function (toast) { toast(globalize.translate("SettingsSaved")); });
+                    }).catch(function () {
+                        require(["toast"], function (toast) { toast(globalize.translate("ErrorSavingSettings")); });
+                    });
+                    return false;
+                });
+            })();
+        </script>
+    </div>
+</body>
+</html>

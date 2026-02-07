@@ -38,6 +38,7 @@ public class JfresolveApiController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
+    private readonly Services.UserPreferencesService _userPrefs;
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -62,12 +63,14 @@ public class JfresolveApiController : ControllerBase
         ILogger<JfresolveApiController> logger,
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
-        Services.CircuitBreakerFactory circuitBreakerFactory)
+        Services.CircuitBreakerFactory circuitBreakerFactory,
+        Services.UserPreferencesService userPrefs)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
+        _userPrefs = userPrefs;
     }
 
     /// <summary>
@@ -98,7 +101,8 @@ public class JfresolveApiController : ControllerBase
         [FromQuery] string? season = null,
         [FromQuery] string? episode = null,
         [FromQuery] string? quality = null,
-        [FromQuery] int? index = null)
+        [FromQuery] int? index = null,
+        [FromQuery] Guid? userId = null)
     {
         // Authorization check: Verify request is from trusted source (localhost or authenticated user)
         if (!IsRequestAuthorized())
@@ -143,10 +147,18 @@ public class JfresolveApiController : ControllerBase
             return NotFound("Addon manifest URL not configured. Please configure it in plugin settings.");
         }
 
+        // Per-user preference: use user's setting when userId is present, otherwise global default
+        var preferHdrOverDolbyVision = config.PreferHdrOverDolbyVision;
+        if (userId.HasValue)
+        {
+            var userPrefs = _userPrefs.Get(userId.Value);
+            preferHdrOverDolbyVision = userPrefs.PreferHdrOverDolbyVision ?? config.PreferHdrOverDolbyVision;
+        }
+
         try
         {
             // Resolve the redirect URL (from cache or by fetching from addon)
-            var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config);
+            var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config, preferHdrOverDolbyVision, userId);
             
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
@@ -324,7 +336,9 @@ public class JfresolveApiController : ControllerBase
     /// </summary>
     private async Task<string?> ResolveRedirectUrlAsync(
         string type, string id, string? season, string? episode, string? quality, int? index,
-        Configuration.PluginConfiguration config)
+        Configuration.PluginConfiguration config,
+        bool preferHdrOverDolbyVision,
+        Guid? userId = null)
     {
         // Validate series parameters
         if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
@@ -342,7 +356,7 @@ public class JfresolveApiController : ControllerBase
         );
 
         // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
-        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index);
+        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index, userId);
         var now = DateTime.UtcNow;
         CleanupRedirectUrlCacheIfNeeded();
         
@@ -367,7 +381,7 @@ public class JfresolveApiController : ControllerBase
             // Select stream using quality selector and failover logic with immediate failover on HTTP errors
             // Keep streamsDoc alive until we're done using the streams element
             var redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
-                type, id, season, episode, quality, index, streamsDoc.RootElement, config);
+                type, id, season, episode, quality, index, streamsDoc.RootElement, config, preferHdrOverDolbyVision);
             
             // Cache the resolved redirect URL for future Range requests
             if (!string.IsNullOrWhiteSpace(redirectUrl))
@@ -643,14 +657,15 @@ public class JfresolveApiController : ControllerBase
         string? quality,
         int? index,
         JsonElement streams,
-        Configuration.PluginConfiguration config)
+        Configuration.PluginConfiguration config,
+        bool preferHdrOverDolbyVision)
     {
             // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
             var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
             int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
 
             // Select the stream using failover-adjusted index
-        var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex);
+        var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
                 _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
@@ -694,7 +709,8 @@ public class JfresolveApiController : ControllerBase
         string? quality,
         int? index,
         JsonElement streams,
-        Configuration.PluginConfiguration config)
+        Configuration.PluginConfiguration config,
+        bool preferHdrOverDolbyVision)
     {
         var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
         var streamArray = streams.EnumerateArray().ToList();
@@ -715,7 +731,7 @@ public class JfresolveApiController : ControllerBase
             attemptedIndices.Add(effectiveIndex);
             
             // Select the stream
-            var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex);
+            var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
                 _logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);
@@ -1375,6 +1391,49 @@ public class JfresolveApiController : ControllerBase
         });
     }
 
+    /// <summary>
+    /// Gets the current user's playback preferences (per-user settings).
+    /// Requires authentication.
+    /// </summary>
+    [HttpGet("user-settings")]
+    public IActionResult GetUserSettings()
+    {
+        if (!TryGetCurrentUserId(out var userId))
+            return Unauthorized("Must be logged in to view user settings");
+
+        var config = JfresolvePlugin.Instance?.Configuration;
+        var prefs = _userPrefs.Get(userId);
+        return Ok(new
+        {
+            preferHdrOverDolbyVision = prefs.PreferHdrOverDolbyVision ?? config?.PreferHdrOverDolbyVision ?? true
+        });
+    }
+
+    /// <summary>
+    /// Saves the current user's playback preferences (per-user settings).
+    /// Requires authentication.
+    /// </summary>
+    [HttpPost("user-settings")]
+    public IActionResult PostUserSettings([FromBody] UserSettingsDto dto)
+    {
+        if (!TryGetCurrentUserId(out var userId))
+            return Unauthorized("Must be logged in to save user settings");
+
+        var prefs = _userPrefs.Get(userId);
+        if (dto.PreferHdrOverDolbyVision.HasValue)
+            prefs.PreferHdrOverDolbyVision = dto.PreferHdrOverDolbyVision.Value;
+        _userPrefs.Set(userId, prefs);
+        return Ok(new { saved = true });
+    }
+
+    private bool TryGetCurrentUserId(out Guid userId)
+    {
+        userId = Guid.Empty;
+        var claim = HttpContext.User?.Claims?.FirstOrDefault(c =>
+            c.Type is "sub" or "UserId" or "Jellyfin-UserId");
+        return claim != null && Guid.TryParse(claim.Value, out userId);
+    }
+
 
     /// <summary>
     /// Builds a cache key for failover tracking
@@ -1397,7 +1456,7 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Builds a cache key for redirect URL caching (includes index for different stream versions)
     /// </summary>
-    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index)
+    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index, Guid? userId = null)
     {
         var key = $"{type}:{id}";
 
@@ -1411,6 +1470,11 @@ public class JfresolveApiController : ControllerBase
         if (index.HasValue)
         {
             key += $":index{index.Value}";
+        }
+
+        if (userId.HasValue)
+        {
+            key += $":u{userId.Value:N}";
         }
 
         return key;
@@ -2292,4 +2356,10 @@ public class JfresolveApiController : ControllerBase
 
         return null;
     }
+}
+
+/// <summary>DTO for user playback settings (POST body).</summary>
+public class UserSettingsDto
+{
+    public bool? PreferHdrOverDolbyVision { get; set; }
 }

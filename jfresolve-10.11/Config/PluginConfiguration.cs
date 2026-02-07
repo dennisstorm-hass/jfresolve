@@ -22,6 +22,12 @@ public class PluginConfiguration : BasePluginConfiguration
     public string PreferredQuality { get; set; } = "Auto";
 
     /// <summary>
+    /// When true, prefer HDR (e.g. HDR10) over Dolby Vision when both exist at the same resolution.
+    /// Useful for players that don't support Dolby Vision and have no fallback.
+    /// </summary>
+    public bool PreferHdrOverDolbyVision { get; set; } = true;
+
+    /// <summary>
     /// Stremio addon manifest URL (e.g., stremio://11111112222222333333344444445555/manifest.json)
     /// Will be normalized to https:// format automatically
     /// </summary>
