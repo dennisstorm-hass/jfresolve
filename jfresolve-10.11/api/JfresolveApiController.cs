@@ -356,7 +356,8 @@ public class JfresolveApiController : ControllerBase
         );
 
         // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
-        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index, userId);
+        // Include preference in key so cached stream matches user's current HDR/DV choice
+        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index, userId, preferHdrOverDolbyVision);
         var now = DateTime.UtcNow;
         CleanupRedirectUrlCacheIfNeeded();
         
@@ -1454,9 +1455,9 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
-    /// Builds a cache key for redirect URL caching (includes index for different stream versions)
+    /// Builds a cache key for redirect URL caching (includes index, user, and HDR/DV preference so cache matches user choice).
     /// </summary>
-    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index, Guid? userId = null)
+    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index, Guid? userId = null, bool preferHdrOverDolbyVision = false)
     {
         var key = $"{type}:{id}";
 
@@ -1476,6 +1477,8 @@ public class JfresolveApiController : ControllerBase
         {
             key += $":u{userId.Value:N}";
         }
+
+        key += preferHdrOverDolbyVision ? ":hdr" : ":dv";
 
         return key;
     }

@@ -10,9 +10,9 @@
     "versions": [
       {
         "version": "1.0.0.43",
-        "changelog": "Stream selection: Prefer HDR (e.g. HDR10) over Dolby Vision when both exist at the same resolution. Now a per-user setting: each user can set 'Prefer HDR over Dolby Vision' in Plugins → Jfresolve → User playback preferences; global default remains in plugin config. Use if your player does not support Dolby Vision and has no fallback.",
+        "changelog": "Stream selection: Prefer HDR (e.g. HDR10) over Dolby Vision when both exist at the same resolution (per-user setting in Plugins → Jfresolve → User playback preferences). Redirect cache now includes HDR/DV preference so changing preference or user gets a new stream URL. Config page link added to open user playback preferences.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.43/jfresolve.zip",
-        "checksum": "40eefdf37ac8e7c95d158240260734bc",
+        "checksum": "eb97bfb6d4a9506102181a4d636505bd",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-02-07T12:32:00Z"
       },

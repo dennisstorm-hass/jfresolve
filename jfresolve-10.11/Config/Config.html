@@ -471,6 +471,10 @@
                                     virtual item. Jellyfin will group these
                                     options under a "Version" dropdown.
                                 </div>
+                                <div class="alert-info" style="margin-top: 16px;">
+                                    <strong>Per-user: Prefer HDR over Dolby Vision</strong> — Each user can set this in their own playback preferences:
+                                    <a id="linkUserPlaybackPrefs" href="#" target="_blank" rel="noopener" style="color: #00a4dc; text-decoration: underline; margin-left: 4px;">Open user playback preferences</a>
+                                </div>
 
                                 <div class="quality-grid">
                                     <div class="checkboxContainer">
@@ -1116,6 +1120,10 @@
                             ).value = config.FailoverWindowSeconds || 120;
 
                             toggleSections();
+                            var linkEl = document.getElementById("linkUserPlaybackPrefs");
+                            if (linkEl && typeof ApiClient !== "undefined" && ApiClient.serverAddress) {
+                                linkEl.href = ApiClient.serverAddress() + "/web/index.html#/configurationpage?name=Jfresolve&page=user-settings";
+                            }
                             Dashboard.hideLoadingMsg();
                         });
                     });
