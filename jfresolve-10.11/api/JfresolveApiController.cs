@@ -10,6 +10,7 @@ using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
 using Jfresolve.Services;
+using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -39,6 +40,7 @@ public class JfresolveApiController : ControllerBase
     private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
     private readonly Services.UserPreferencesService _userPrefs;
+    private readonly IAuthorizationContext _authContext;
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -64,13 +66,15 @@ public class JfresolveApiController : ControllerBase
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
-        Services.UserPreferencesService userPrefs)
+        Services.UserPreferencesService userPrefs,
+        IAuthorizationContext authContext)
     {
         _logger = logger;
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
         _userPrefs = userPrefs;
+        _authContext = authContext;
     }
 
     /// <summary>
@@ -1397,9 +1401,10 @@ public class JfresolveApiController : ControllerBase
     /// Non-admin users can open this URL directly (no Dashboard needed). Requires login.
     /// </summary>
     [HttpGet("user-settings/page")]
-    public IActionResult GetUserSettingsPage()
+    public async Task<IActionResult> GetUserSettingsPage()
     {
-        if (!TryGetCurrentUserId(out _))
+        var userId = await TryGetCurrentUserIdAsync();
+        if (userId == null)
             return Unauthorized("Must be logged in to open this page");
 
         var html = """
@@ -1474,13 +1479,14 @@ public class JfresolveApiController : ControllerBase
     /// Requires authentication.
     /// </summary>
     [HttpGet("user-settings")]
-    public IActionResult GetUserSettings()
+    public async Task<IActionResult> GetUserSettings()
     {
-        if (!TryGetCurrentUserId(out var userId))
+        var userId = await TryGetCurrentUserIdAsync();
+        if (userId == null)
             return Unauthorized("Must be logged in to view user settings");
 
         var config = JfresolvePlugin.Instance?.Configuration;
-        var prefs = _userPrefs.Get(userId);
+        var prefs = _userPrefs.Get(userId.Value);
         return Ok(new
         {
             preferHdrOverDolbyVision = prefs.PreferHdrOverDolbyVision ?? config?.PreferHdrOverDolbyVision ?? true
@@ -1492,24 +1498,41 @@ public class JfresolveApiController : ControllerBase
     /// Requires authentication.
     /// </summary>
     [HttpPost("user-settings")]
-    public IActionResult PostUserSettings([FromBody] UserSettingsDto dto)
+    public async Task<IActionResult> PostUserSettings([FromBody] UserSettingsDto dto)
     {
-        if (!TryGetCurrentUserId(out var userId))
+        var userId = await TryGetCurrentUserIdAsync();
+        if (userId == null)
             return Unauthorized("Must be logged in to save user settings");
 
-        var prefs = _userPrefs.Get(userId);
+        var prefs = _userPrefs.Get(userId.Value);
         if (dto.PreferHdrOverDolbyVision.HasValue)
             prefs.PreferHdrOverDolbyVision = dto.PreferHdrOverDolbyVision.Value;
-        _userPrefs.Set(userId, prefs);
+        _userPrefs.Set(userId.Value, prefs);
         return Ok(new { saved = true });
     }
 
-    private bool TryGetCurrentUserId(out Guid userId)
+    private async Task<Guid?> TryGetCurrentUserIdAsync()
     {
-        userId = Guid.Empty;
+        try
+        {
+            var authInfo = await _authContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+            if (authInfo != null && authInfo.IsAuthenticated)
+            {
+                if (authInfo.UserId != Guid.Empty)
+                    return authInfo.UserId;
+                if (authInfo.User != null)
+                    return authInfo.User.Id;
+            }
+        }
+        catch
+        {
+            // Fall through to Claims
+        }
         var claim = HttpContext.User?.Claims?.FirstOrDefault(c =>
             c.Type is "sub" or "UserId" or "Jellyfin-UserId");
-        return claim != null && Guid.TryParse(claim.Value, out userId);
+        if (claim != null && Guid.TryParse(claim.Value, out var guid))
+            return guid;
+        return null;
     }
 
 

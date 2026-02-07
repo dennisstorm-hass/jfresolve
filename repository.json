@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.46",
+        "changelog": "Fix: User playback preferences page (/Plugins/Jfresolve/user-settings/page) now correctly recognizes logged-in users via Jellyfin IAuthorizationContext, fixing 'Must be logged in' for non-admin users.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.46/jfresolve.zip",
+        "checksum": "f52d8e7d638ad0beae7700b786298fdb",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-07T12:32:00Z"
+      },
+      {
         "version": "1.0.0.45",
         "changelog": "User playback preferences (HDR vs Dolby Vision): non-admin users can open /Plugins/Jfresolve/user-settings/page directly in the browser (no Dashboard/Plugins menu required). Per-user setting and redirect cache for HDR/DV preference.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.45/jfresolve.zip",
