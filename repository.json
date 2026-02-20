@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.56",
+        "changelog": "Fix: Streaming EntryPointNotFoundException in IsRequestAuthorized. Stop reading Request.Headers (Referer/User-Agent) to avoid host ABI mismatch; rely on localhost, private IP + host, and authenticated user only.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.56/jfresolve.zip",
+        "checksum": "aa0c636b9aad11ba6320852730645504",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T08:21:49Z"
+      },
+      {
         "version": "1.0.0.55",
         "changelog": "Fix: Streaming MissingMethodException (IHeaderDictionary.get_Item). Use TryGetValue/Append for request and response headers for host ASP.NET Core compatibility.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.55/jfresolve.zip",

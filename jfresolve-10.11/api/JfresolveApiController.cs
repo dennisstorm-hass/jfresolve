@@ -2083,34 +2083,14 @@ public class JfresolveApiController : ControllerBase
         }
 
         // Check if user is authenticated (has valid Jellyfin session)
-        // This allows authenticated Jellyfin clients to access streams
         if (HttpContext.User?.Identity?.IsAuthenticated == true)
         {
             return true; // Authenticated Jellyfin user
         }
 
-        // Check for Referer header from Jellyfin (additional security layer)
-        // This helps verify the request is coming from a Jellyfin client
-        var referer = GetRequestHeader(Request, "Referer");
-        if (!string.IsNullOrWhiteSpace(referer))
-        {
-            var serverUrl = config?.JellyfinServerUrl ?? "http://localhost:8096";
-            var normalizedServerUrl = serverUrl.TrimEnd('/');
-            if (referer.StartsWith(normalizedServerUrl, StringComparison.OrdinalIgnoreCase))
-            {
-                return true; // Request from Jellyfin server
-            }
-        }
-
-        // Check for User-Agent header that indicates Jellyfin client
-        var userAgent = GetRequestHeader(Request, "User-Agent");
-        if (!string.IsNullOrWhiteSpace(userAgent) && 
-            (userAgent.Contains("Jellyfin", StringComparison.OrdinalIgnoreCase) ||
-             userAgent.Contains("Emby", StringComparison.OrdinalIgnoreCase)))
-        {
-            return true; // Request from Jellyfin/Emby client
-        }
-
+        // Do not read Request.Headers (Referer/User-Agent) here: on some Jellyfin hosts, calling
+        // IHeaderDictionary.TryGetValue causes EntryPointNotFoundException due to ABI mismatch.
+        // Authorization is sufficient via: localhost, private IP + host match, or authenticated user.
         return false; // Not authorized
     }
 
