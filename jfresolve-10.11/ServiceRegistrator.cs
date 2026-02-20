@@ -26,6 +26,10 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
+        // Plugin controller (Image/config) is activated from a scope that only has plugin services.
+        // Ensure logging is available so ILoggerFactory can be resolved for JfresolveApiController.
+        services.AddLogging();
+
         // Register circuit breaker factory
         services.AddSingleton<Services.CircuitBreakerFactory>();
 
