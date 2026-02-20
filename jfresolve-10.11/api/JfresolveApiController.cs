@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.Api;
 
@@ -35,12 +36,18 @@ internal enum StreamStopReason
 [Route("Plugins/506f18b85dad4cd3b9a0f7ed933e9939")] // Alternative route using plugin GUID for image requests
 public class JfresolveApiController : ControllerBase
 {
-    private readonly ILogger<JfresolveApiController> _logger;
+    private ILogger<JfresolveApiController>? _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
     private readonly Services.UserPreferencesService _userPrefs;
     private readonly IAuthorizationContext _authContext;
+
+    /// <summary>Logger resolved lazily so controller can be activated when plugin scope has no ILoggerFactory (e.g. Image route).</summary>
+    private ILogger<JfresolveApiController> Logger =>
+        _logger ??= HttpContext?.RequestServices?.GetService(typeof(ILoggerFactory)) is ILoggerFactory factory
+            ? factory.CreateLogger<JfresolveApiController>()
+            : NullLogger<JfresolveApiController>.Instance;
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -62,14 +69,12 @@ public class JfresolveApiController : ControllerBase
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
-        ILoggerFactory loggerFactory,
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
-        _logger = loggerFactory.CreateLogger<JfresolveApiController>();
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
@@ -111,7 +116,7 @@ public class JfresolveApiController : ControllerBase
         // Authorization check: Verify request is from trusted source (localhost or authenticated user)
         if (!IsRequestAuthorized())
         {
-            _logger.LogWarning("Jfresolve: Unauthorized access attempt to ResolveStream from {RemoteIp}", 
+            Logger.LogWarning("Jfresolve: Unauthorized access attempt to ResolveStream from {RemoteIp}", 
                 HttpContext.Connection.RemoteIpAddress);
             return Unauthorized("Unauthorized: Request must come from localhost or authenticated Jellyfin client");
         }
@@ -131,7 +136,7 @@ public class JfresolveApiController : ControllerBase
         quality = validationResult.Quality;
         index = validationResult.Index;
 
-        _logger.LogInformation(
+        Logger.LogInformation(
             "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
             type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A",
             Request.Path, Request.Headers["Range"].ToString()
@@ -140,14 +145,14 @@ public class JfresolveApiController : ControllerBase
         var config = JfresolvePlugin.Instance?.Configuration;
         if (config == null)
         {
-            _logger.LogError("Jfresolve: Plugin configuration is null");
+            Logger.LogError("Jfresolve: Plugin configuration is null");
             return BadRequest("Plugin not initialized");
         }
 
         // Check if addon manifest URL is configured
         if (string.IsNullOrWhiteSpace(config.AddonManifestUrl))
         {
-            _logger.LogError("Jfresolve: Addon manifest URL not configured - cannot resolve stream");
+            Logger.LogError("Jfresolve: Addon manifest URL not configured - cannot resolve stream");
             return NotFound("Addon manifest URL not configured. Please configure it in plugin settings.");
         }
 
@@ -176,12 +181,12 @@ public class JfresolveApiController : ControllerBase
         {
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Network error contacting addon for {Type}/{Id}", type, id);
+                Logger.LogError(ex, "Jfresolve: Network error contacting addon for {Type}/{Id}", type, id);
                 return StatusCode(502, "Network error: Unable to contact stream provider. Please try again later.");
             }
             else
             {
-                _logger.LogWarning(ex, "Jfresolve: Network error during streaming for {Type}/{Id}", type, id);
+                Logger.LogWarning(ex, "Jfresolve: Network error during streaming for {Type}/{Id}", type, id);
                 return new EmptyResult();
             }
         }
@@ -190,12 +195,12 @@ public class JfresolveApiController : ControllerBase
             // Timeout (not user cancellation)
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Timeout contacting addon for {Type}/{Id}", type, id);
+                Logger.LogError(ex, "Jfresolve: Timeout contacting addon for {Type}/{Id}", type, id);
                 return StatusCode(504, "Timeout: Stream provider did not respond in time. Please try again.");
             }
             else
             {
-                _logger.LogWarning(ex, "Jfresolve: Timeout during streaming for {Type}/{Id}", type, id);
+                Logger.LogWarning(ex, "Jfresolve: Timeout during streaming for {Type}/{Id}", type, id);
                 return new EmptyResult();
             }
         }
@@ -203,12 +208,12 @@ public class JfresolveApiController : ControllerBase
         {
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Invalid response format from addon for {Type}/{Id}", type, id);
+                Logger.LogError(ex, "Jfresolve: Invalid response format from addon for {Type}/{Id}", type, id);
                 return StatusCode(502, "Invalid response: Stream provider returned invalid data. Please try again.");
             }
             else
             {
-                _logger.LogWarning(ex, "Jfresolve: JSON parse error during streaming for {Type}/{Id}", type, id);
+                Logger.LogWarning(ex, "Jfresolve: JSON parse error during streaming for {Type}/{Id}", type, id);
                 return new EmptyResult();
             }
         }
@@ -219,12 +224,12 @@ public class JfresolveApiController : ControllerBase
             // Connection reset - check if response has started
             if (!Response.HasStarted)
             {
-                _logger.LogWarning(ioEx, "Jfresolve: Connection reset for {Type}/{Id}", type, id);
+                Logger.LogWarning(ioEx, "Jfresolve: Connection reset for {Type}/{Id}", type, id);
                 return StatusCode(502, "Connection error: Connection to stream provider was reset. Please try again.");
             }
             else
             {
-                _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {Type}/{Id} (normal client disconnect)", type, id);
+                Logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {Type}/{Id} (normal client disconnect)", type, id);
                 return new EmptyResult();
             }
         }
@@ -233,13 +238,13 @@ public class JfresolveApiController : ControllerBase
             // Only return error if response hasn't started
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Unexpected error resolving stream for {Type}/{Id}", type, id);
+                Logger.LogError(ex, "Jfresolve: Unexpected error resolving stream for {Type}/{Id}", type, id);
                 return StatusCode(500, "Internal error: An unexpected error occurred. Please try again later.");
             }
             else
             {
                 // Response already started - log and let connection close
-                _logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {Type}/{Id}", type, id);
+                Logger.LogWarning(ex, "Jfresolve: Error during streaming after response started for {Type}/{Id}", type, id);
                 return new EmptyResult();
             }
         }
@@ -270,14 +275,14 @@ public class JfresolveApiController : ControllerBase
         // Input validation and sanitization
         if (string.IsNullOrWhiteSpace(type))
         {
-            _logger.LogWarning("Jfresolve: Invalid request - type parameter is empty");
+            Logger.LogWarning("Jfresolve: Invalid request - type parameter is empty");
             result.ErrorResult = BadRequest("Type parameter is required");
             return result;
         }
 
         if (string.IsNullOrWhiteSpace(id))
         {
-            _logger.LogWarning("Jfresolve: Invalid request - id parameter is empty");
+            Logger.LogWarning("Jfresolve: Invalid request - id parameter is empty");
             result.ErrorResult = BadRequest("Id parameter is required");
             return result;
         }
@@ -294,7 +299,7 @@ public class JfresolveApiController : ControllerBase
         if (!result.Type.Equals("movie", StringComparison.OrdinalIgnoreCase) && 
             !result.Type.Equals("series", StringComparison.OrdinalIgnoreCase))
         {
-            _logger.LogWarning("Jfresolve: Invalid request - unsupported type: {Type}", result.Type);
+            Logger.LogWarning("Jfresolve: Invalid request - unsupported type: {Type}", result.Type);
             result.ErrorResult = BadRequest("Type must be 'movie' or 'series'");
             return result;
         }
@@ -302,7 +307,7 @@ public class JfresolveApiController : ControllerBase
         // Validate IMDB ID format
         if (!IsValidImdbId(result.Id))
         {
-            _logger.LogWarning("Jfresolve: Invalid request - invalid IMDB ID format: {Id}", result.Id);
+            Logger.LogWarning("Jfresolve: Invalid request - invalid IMDB ID format: {Id}", result.Id);
             result.ErrorResult = BadRequest("Invalid IMDB ID format. Expected format: tt1234567");
             return result;
         }
@@ -312,13 +317,13 @@ public class JfresolveApiController : ControllerBase
         {
             if (string.IsNullOrWhiteSpace(result.Season) || !IsValidSeasonOrEpisode(result.Season))
             {
-                _logger.LogWarning("Jfresolve: Invalid request - invalid season: {Season}", result.Season);
+                Logger.LogWarning("Jfresolve: Invalid request - invalid season: {Season}", result.Season);
                 result.ErrorResult = BadRequest("Season must be a positive number between 1 and 999");
                 return result;
             }
             if (string.IsNullOrWhiteSpace(result.Episode) || !IsValidSeasonOrEpisode(result.Episode))
             {
-                _logger.LogWarning("Jfresolve: Invalid request - invalid episode: {Episode}", result.Episode);
+                Logger.LogWarning("Jfresolve: Invalid request - invalid episode: {Episode}", result.Episode);
                 result.ErrorResult = BadRequest("Episode must be a positive number between 1 and 999");
                 return result;
             }
@@ -327,7 +332,7 @@ public class JfresolveApiController : ControllerBase
         // Validate index is within reasonable bounds
         if (result.Index.HasValue && (result.Index.Value < 0 || result.Index.Value > 100))
         {
-            _logger.LogWarning("Jfresolve: Invalid request - index out of bounds: {Index}", result.Index.Value);
+            Logger.LogWarning("Jfresolve: Invalid request - index out of bounds: {Index}", result.Index.Value);
             result.ErrorResult = BadRequest("Index must be between 0 and 100");
             return result;
         }
@@ -349,12 +354,12 @@ public class JfresolveApiController : ControllerBase
         {
             if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
             {
-                _logger.LogWarning("Jfresolve: Missing season or episode for series");
+                Logger.LogWarning("Jfresolve: Missing season or episode for series");
                 return null;
             }
         }
 
-        _logger.LogInformation(
+        Logger.LogInformation(
             "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
             type, id, season ?? "N/A", episode ?? "N/A"
         );
@@ -367,7 +372,7 @@ public class JfresolveApiController : ControllerBase
         
         if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
         {
-            _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+            Logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
                 type, id, season ?? "N/A", episode ?? "N/A");
             return cachedRedirect.RedirectUrl;
         }
@@ -379,7 +384,7 @@ public class JfresolveApiController : ControllerBase
             streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
             if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
             {
-                _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
+                Logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
                 return null;
             }
 
@@ -393,7 +398,7 @@ public class JfresolveApiController : ControllerBase
             {
                 var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                 _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
-                _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                Logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
                     type, id, season ?? "N/A", episode ?? "N/A");
             }
 
@@ -431,7 +436,7 @@ public class JfresolveApiController : ControllerBase
         var now = DateTime.UtcNow;
         if (_streamMetadataCache.TryGetValue(streamUrl, out var cached) && cached.Expiry > now)
         {
-            _logger.LogDebug("Jfresolve: Using cached stream metadata for {StreamUrl}", streamUrl);
+            Logger.LogDebug("Jfresolve: Using cached stream metadata for {StreamUrl}", streamUrl);
             try
             {
                 // Parse cached JSON and extract streams array
@@ -446,12 +451,12 @@ public class JfresolveApiController : ControllerBase
             }
             catch (Exception ex)
             {
-                _logger.LogWarning(ex, "Jfresolve: Failed to parse cached stream metadata, fetching fresh");
+                Logger.LogWarning(ex, "Jfresolve: Failed to parse cached stream metadata, fetching fresh");
                 // Fall through to fetch fresh data
             }
             }
 
-            _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
+            Logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
 
             // Call the Stremio addon to get the stream (with circuit breaker protection)
         var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
@@ -459,11 +464,11 @@ public class JfresolveApiController : ControllerBase
         addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
             var response = await _addonCircuitBreaker.ExecuteAsync(
                 async () => await addonHttpClient.GetStringAsync(streamUrl),
-                async () => { _logger.LogWarning("Circuit breaker open for Stremio addon, returning null"); return (string?)null; });
+                async () => { Logger.LogWarning("Circuit breaker open for Stremio addon, returning null"); return (string?)null; });
             
             if (string.IsNullOrEmpty(response))
             {
-                _logger.LogWarning("Jfresolve: No response from addon (circuit breaker may be open)");
+                Logger.LogWarning("Jfresolve: No response from addon (circuit breaker may be open)");
                 return null;
             }
 
@@ -673,29 +678,29 @@ public class JfresolveApiController : ControllerBase
         var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
-                _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
+                Logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
             return null;
             }
 
             if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
             {
-                _logger.LogWarning("Jfresolve: No URL property in stream response");
+                Logger.LogWarning("Jfresolve: No URL property in stream response");
             return null;
             }
 
             var redirectUrl = urlProperty.GetString();
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
-                _logger.LogWarning("Jfresolve: Empty stream URL received");
+                Logger.LogWarning("Jfresolve: Empty stream URL received");
             return null;
             }
 
-            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
+            Logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
 
         // Validate URL to prevent SSRF attacks
         if (!IsValidStreamUrl(redirectUrl))
             {
-            _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
+            Logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
             return null;
         }
 
@@ -739,27 +744,27 @@ public class JfresolveApiController : ControllerBase
             var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
-                _logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);
+                Logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);
                 continue; // Try next stream
             }
 
             if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
             {
-                _logger.LogWarning("Jfresolve: No URL property in stream response at index {Index}", effectiveIndex);
+                Logger.LogWarning("Jfresolve: No URL property in stream response at index {Index}", effectiveIndex);
                 continue; // Try next stream
             }
 
             var redirectUrl = urlProperty.GetString();
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
-                _logger.LogWarning("Jfresolve: Empty stream URL at index {Index}", effectiveIndex);
+                Logger.LogWarning("Jfresolve: Empty stream URL at index {Index}", effectiveIndex);
                 continue; // Try next stream
             }
 
             // Validate URL to prevent SSRF attacks
             if (!IsValidStreamUrl(redirectUrl))
             {
-                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL at index {Index}: {RedirectUrl}", effectiveIndex, redirectUrl);
+                Logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL at index {Index}: {RedirectUrl}", effectiveIndex, redirectUrl);
                 continue; // Try next stream
             }
 
@@ -770,19 +775,19 @@ public class JfresolveApiController : ControllerBase
                 var isValid = await TestStreamUrlAsync(redirectUrl);
                 if (!isValid)
                 {
-                    _logger.LogWarning("Jfresolve: Stream URL at index {Index} failed validation, trying next stream", effectiveIndex);
+                    Logger.LogWarning("Jfresolve: Stream URL at index {Index} failed validation, trying next stream", effectiveIndex);
                     // Mark this index as failed in failover cache for future requests
                     MarkStreamAsFailed(cacheKey, effectiveIndex);
                     continue; // Try next stream
                 }
             }
 
-            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl} (attempt {Attempt}, index {Index})", 
+            Logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl} (attempt {Attempt}, index {Index})", 
                 type, id, redirectUrl, attempt + 1, effectiveIndex);
             return redirectUrl;
         }
 
-        _logger.LogError("Jfresolve: Failed to find a valid stream after {Attempts} attempts for {Type}/{Id}", 
+        Logger.LogError("Jfresolve: Failed to find a valid stream after {Attempts} attempts for {Type}/{Id}", 
             maxAttempts, type, id);
         return null;
     }
@@ -808,14 +813,14 @@ public class JfresolveApiController : ControllerBase
             
             if (!isValid)
             {
-                _logger.LogDebug("Jfresolve: Stream URL test failed with status {StatusCode}: {Url}", response.StatusCode, url);
+                Logger.LogDebug("Jfresolve: Stream URL test failed with status {StatusCode}: {Url}", response.StatusCode, url);
             }
             
             return isValid;
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Jfresolve: Stream URL test failed for {Url}", url);
+            Logger.LogDebug(ex, "Jfresolve: Stream URL test failed for {Url}", url);
             return false;
         }
     }
@@ -845,7 +850,7 @@ public class JfresolveApiController : ControllerBase
             // IMPORTANT: Must support HTTP Range requests (206 Partial Content) for FFmpeg seeking
             try
             {
-                _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
+                Logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
                 
             // Disable response buffering for optimal streaming performance
             Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
@@ -864,7 +869,7 @@ public class JfresolveApiController : ControllerBase
             // Parse range header to extract start position for workaround
                 if (!string.IsNullOrEmpty(rangeHeader))
                 {
-                    _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
+                    Logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
                 rangeStart = ParseRangeStart(rangeHeader);
             }
                 
@@ -881,7 +886,7 @@ public class JfresolveApiController : ControllerBase
             if (_resolvedUrlCache.TryGetValue(redirectUrl, out var cachedResolved) && cachedResolved.Expiry > now)
             {
                 finalUrl = cachedResolved.FinalUrl;
-                _logger.LogDebug("Jfresolve: Using cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
+                Logger.LogDebug("Jfresolve: Using cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
             }
             
             HttpResponseMessage? streamResponse = null;
@@ -907,7 +912,7 @@ public class JfresolveApiController : ControllerBase
                 
                 if (streamResponse == null)
                 {
-                    _logger.LogError("Jfresolve: Failed to connect to cached stream URL after retries: {FinalUrl}", finalUrl);
+                    Logger.LogError("Jfresolve: Failed to connect to cached stream URL after retries: {FinalUrl}", finalUrl);
                     return StatusCode(502, "Failed to connect to stream after retries");
                 }
             }
@@ -932,7 +937,7 @@ public class JfresolveApiController : ControllerBase
                 
                 if (initialResponse == null)
                 {
-                    _logger.LogError("Jfresolve: Failed to connect to redirect URL after retries: {RedirectUrl}", redirectUrl);
+                    Logger.LogError("Jfresolve: Failed to connect to redirect URL after retries: {RedirectUrl}", redirectUrl);
                     return StatusCode(502, "Failed to connect to stream URL after retries");
                 }
                 
@@ -942,7 +947,7 @@ public class JfresolveApiController : ControllerBase
                 if (streamResponse == null)
                 {
                     initialResponse?.Dispose(); // Dispose if redirects failed
-                    _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
+                    Logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
                     return StatusCode(502, "Failed to resolve stream URL after redirects");
                 }
                 
@@ -951,7 +956,7 @@ public class JfresolveApiController : ControllerBase
                 if (!string.IsNullOrEmpty(finalUrl) && finalUrl != redirectUrl)
                 {
                     _resolvedUrlCache.TryAdd(redirectUrl, (finalUrl, now.Add(Constants.ResolvedUrlCacheExpiry)));
-                    _logger.LogDebug("Jfresolve: Cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
+                    Logger.LogDebug("Jfresolve: Cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
                 }
             }
             
@@ -999,7 +1004,7 @@ public class JfresolveApiController : ControllerBase
             var (_, stopReason) = await StreamContentAsync(finalStreamResponse, type, id, rangeStart, cancellationToken, getStreamFromOffset);
             if (stopReason == StreamStopReason.UpstreamFailure)
             {
-                _logger.LogWarning("Jfresolve: Stream ended after upstream failure for {Type}/{Id} (reconnect exhausted or unavailable)", type, id);
+                Logger.LogWarning("Jfresolve: Stream ended after upstream failure for {Type}/{Id} (reconnect exhausted or unavailable)", type, id);
             }
             
             return new EmptyResult();
@@ -1009,13 +1014,13 @@ public class JfresolveApiController : ControllerBase
             // Only return error if response hasn't started yet
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Network error proxying stream from {RedirectUrl}", redirectUrl);
+                Logger.LogError(ex, "Jfresolve: Network error proxying stream from {RedirectUrl}", redirectUrl);
                 return StatusCode(502, "Network error: Unable to connect to stream server");
             }
             else
             {
                 // Response already started - log and let connection close
-                _logger.LogWarning(ex, "Jfresolve: Network error during streaming after response started for {RedirectUrl}", redirectUrl);
+                Logger.LogWarning(ex, "Jfresolve: Network error during streaming after response started for {RedirectUrl}", redirectUrl);
                 return new EmptyResult();
             }
         }
@@ -1024,12 +1029,12 @@ public class JfresolveApiController : ControllerBase
             // Timeout (not user cancellation)
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Timeout connecting to stream from {RedirectUrl}", redirectUrl);
+                Logger.LogError(ex, "Jfresolve: Timeout connecting to stream from {RedirectUrl}", redirectUrl);
                 return StatusCode(504, "Gateway timeout: Stream server did not respond in time");
             }
             else
             {
-                _logger.LogWarning(ex, "Jfresolve: Timeout during streaming for {RedirectUrl}", redirectUrl);
+                Logger.LogWarning(ex, "Jfresolve: Timeout during streaming for {RedirectUrl}", redirectUrl);
                 return new EmptyResult();
             }
         }
@@ -1040,12 +1045,12 @@ public class JfresolveApiController : ControllerBase
             // Connection reset before or during streaming
             if (!Response.HasStarted)
             {
-                _logger.LogWarning(ioEx, "Jfresolve: Connection reset before streaming started for {RedirectUrl}", redirectUrl);
+                Logger.LogWarning(ioEx, "Jfresolve: Connection reset before streaming started for {RedirectUrl}", redirectUrl);
                 return StatusCode(502, "Connection reset: Stream server closed the connection");
             }
             else
             {
-                _logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {RedirectUrl} (normal client disconnect)", redirectUrl);
+                Logger.LogInformation(ioEx, "Jfresolve: Connection reset during streaming for {RedirectUrl} (normal client disconnect)", redirectUrl);
                 return new EmptyResult();
             }
         }
@@ -1053,7 +1058,7 @@ public class JfresolveApiController : ControllerBase
         {
             // Client disconnected mid-stream after we had set Content-Length; Kestrel throws when we don't write all bytes.
             // Treat as normal disconnect so it doesn't surface as an unhandled exception.
-            _logger.LogInformation(ioEx, "Jfresolve: Client disconnected during streaming for {RedirectUrl} (Content-Length mismatch)", redirectUrl);
+            Logger.LogInformation(ioEx, "Jfresolve: Client disconnected during streaming for {RedirectUrl} (Content-Length mismatch)", redirectUrl);
             return new EmptyResult();
         }
         catch (Exception ex)
@@ -1061,12 +1066,12 @@ public class JfresolveApiController : ControllerBase
             // Unexpected errors
             if (!Response.HasStarted)
             {
-                _logger.LogError(ex, "Jfresolve: Unexpected error proxying stream from {RedirectUrl}", redirectUrl);
+                Logger.LogError(ex, "Jfresolve: Unexpected error proxying stream from {RedirectUrl}", redirectUrl);
                 return StatusCode(500, "Internal error: An unexpected error occurred while streaming");
             }
             else
             {
-                _logger.LogError(ex, "Jfresolve: Unexpected error during streaming for {RedirectUrl}", redirectUrl);
+                Logger.LogError(ex, "Jfresolve: Unexpected error during streaming for {RedirectUrl}", redirectUrl);
                 return new EmptyResult();
             }
         }
@@ -1103,14 +1108,14 @@ public class JfresolveApiController : ControllerBase
                 // Set Content-Length so clients (e.g. Kodi) can resume via Range requests. On client disconnect we abort the connection to avoid Kestrel's Content-Length mismatch.
                 Response.ContentLength = rangeLength;
                 
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
+                Logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
                     start, end, totalLength.Value, rangeLength);
             }
             else if (rangeStart.HasValue)
             {
                 // Don't know total length - can't set proper Content-Range
                 // This is okay, we'll still skip bytes and stream the rest
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (skipping {Bytes} bytes, unknown total length)", rangeStart.Value);
+                Logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (skipping {Bytes} bytes, unknown total length)", rangeStart.Value);
                 }
         }
         else
@@ -1211,12 +1216,12 @@ public class JfresolveApiController : ControllerBase
                             var skipped = await stream.ReadAsync(buffer.AsMemory(0, skipBufferSize), cancellationToken);
                             if (skipped == 0)
                             {
-                                _logger.LogWarning("Jfresolve: Reached end of stream while skipping bytes (requested: {Requested}, skipped: {Skipped})", bytesToSkip, bytesSkipped);
+                                Logger.LogWarning("Jfresolve: Reached end of stream while skipping bytes (requested: {Requested}, skipped: {Skipped})", bytesToSkip, bytesSkipped);
                                 break;
                             }
                             bytesSkipped += skipped;
                         }
-                        _logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
+                        Logger.LogDebug("Jfresolve: Skipped {Bytes} bytes for range request workaround", bytesSkipped);
                         needToSkipBytes = false;
                     }
 
@@ -1238,7 +1243,7 @@ public class JfresolveApiController : ControllerBase
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
-                    _logger.LogInformation("Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    Logger.LogInformation("Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
                     AbortConnection();
                     return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                 }
@@ -1251,10 +1256,10 @@ public class JfresolveApiController : ControllerBase
                     }
                     if (!Response.HasStarted)
                     {
-                        _logger.LogError(tce, "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}", type, id);
+                        Logger.LogError(tce, "Jfresolve: HttpClient timeout before streaming started for {Type}/{Id}", type, id);
                         throw;
                     }
-                    _logger.LogWarning("Jfresolve: Upstream timeout during streaming for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    Logger.LogWarning("Jfresolve: Upstream timeout during streaming for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok1, s1, d1, c1) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok1) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s1; reconnectResponseToDispose = d1; reconnectCount = c1;
@@ -1262,8 +1267,8 @@ public class JfresolveApiController : ControllerBase
                 catch (TimeoutException te)
                 {
                     if (cancellationToken.IsCancellationRequested) { AbortConnection(); return (totalBytesWritten, StreamStopReason.ClientDisconnect); }
-                    if (!Response.HasStarted) { _logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id); throw; }
-                    _logger.LogWarning("Jfresolve: Upstream timeout for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    if (!Response.HasStarted) { Logger.LogError(te, "Jfresolve: Timeout before streaming started for {Type}/{Id}", type, id); throw; }
+                    Logger.LogWarning("Jfresolve: Upstream timeout for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok2, s2, d2, c2) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok2) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s2; reconnectResponseToDispose = d2; reconnectCount = c2;
@@ -1273,11 +1278,11 @@ public class JfresolveApiController : ControllerBase
                 {
                     if (cancellationToken.IsCancellationRequested || HttpContext.RequestAborted.IsCancellationRequested)
                     {
-                        _logger.LogInformation("Jfresolve: Client disconnected for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                        Logger.LogInformation("Jfresolve: Client disconnected for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
                         AbortConnection();
                         return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                     }
-                    _logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    Logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok3, s3, d3, c3) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok3) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s3; reconnectResponseToDispose = d3; reconnectCount = c3;
@@ -1290,7 +1295,7 @@ public class JfresolveApiController : ControllerBase
                         AbortConnection();
                         return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                     }
-                    _logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
+                    Logger.LogInformation("Jfresolve: Upstream connection reset for {Type}/{Id} after ~{Bytes} bytes, reconnecting", type, id, totalBytesWritten);
                     var (ok4, s4, d4, c4) = await TryReconnectAsync(stream, reconnectResponseToDispose, reconnectCount, rangeStart, totalBytesWritten, getStreamFromOffset);
                     if (!ok4) return (totalBytesWritten, StreamStopReason.UpstreamFailure);
                     stream = s4; reconnectResponseToDispose = d4; reconnectCount = c4;
@@ -1321,7 +1326,7 @@ public class JfresolveApiController : ControllerBase
         if (newStream == null)
             return (false, null, null, reconnectCount);
         reconnectCount++;
-        _logger.LogInformation("Jfresolve: Reconnected at byte {Offset} (reconnect {N}/{Max})", offset, reconnectCount, Constants.MaxStreamReconnectAttempts);
+        Logger.LogInformation("Jfresolve: Reconnected at byte {Offset} (reconnect {N}/{Max})", offset, reconnectCount, Constants.MaxStreamReconnectAttempts);
         return (true, newStream, toDispose, reconnectCount);
     }
 
@@ -1336,7 +1341,7 @@ public class JfresolveApiController : ControllerBase
     {
         try
         {
-            _logger.LogDebug("Jfresolve: Plugin image requested (version: {Version})", version ?? "none");
+            Logger.LogDebug("Jfresolve: Plugin image requested (version: {Version})", version ?? "none");
             
             var assembly = Assembly.GetExecutingAssembly();
             
@@ -1357,7 +1362,7 @@ public class JfresolveApiController : ControllerBase
                 if (imageStream != null)
                 {
                     foundResourceName = resourceName;
-                    _logger.LogDebug("Jfresolve: Found plugin image resource: {ResourceName}", resourceName);
+                    Logger.LogDebug("Jfresolve: Found plugin image resource: {ResourceName}", resourceName);
                     break;
                 }
             }
@@ -1366,7 +1371,7 @@ public class JfresolveApiController : ControllerBase
             if (imageStream == null)
             {
                 var allResources = assembly.GetManifestResourceNames();
-                _logger.LogWarning("Jfresolve: Plugin image resource not found. Available resources: {Resources}", 
+                Logger.LogWarning("Jfresolve: Plugin image resource not found. Available resources: {Resources}", 
                     string.Join(", ", allResources));
                 return NotFound("Plugin image not found");
             }
@@ -1375,7 +1380,7 @@ public class JfresolveApiController : ControllerBase
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Jfresolve: Error serving plugin image");
+            Logger.LogError(ex, "Jfresolve: Error serving plugin image");
             return StatusCode(500, "Error serving plugin image");
         }
     }
@@ -1610,7 +1615,7 @@ public class JfresolveApiController : ControllerBase
 
         if (!failoverEnabled)
         {
-            _logger.LogDebug("Jfresolve FAILOVER: Disabled for {Type}, using requested index {Index}", type, requestedIndex ?? 0);
+            Logger.LogDebug("Jfresolve FAILOVER: Disabled for {Type}, using requested index {Index}", type, requestedIndex ?? 0);
             return requestedIndex ?? 0;
         }
 
@@ -1628,7 +1633,7 @@ public class JfresolveApiController : ControllerBase
 
             if (totalStreams == 0)
             {
-                _logger.LogWarning(
+                Logger.LogWarning(
                     "Jfresolve FAILOVER: No streams found for quality {Quality}, falling back to discovery",
                     quality
                 );
@@ -1639,7 +1644,7 @@ public class JfresolveApiController : ControllerBase
         // If only one stream available, no need for failover
         if (totalStreams <= 1)
         {
-            _logger.LogDebug("Jfresolve FAILOVER: Only {Count} stream(s) available, no failover needed", totalStreams);
+            Logger.LogDebug("Jfresolve FAILOVER: Only {Count} stream(s) available, no failover needed", totalStreams);
             return effectiveIndex;
         }
 
@@ -1656,7 +1661,7 @@ public class JfresolveApiController : ControllerBase
             // Reset window: assume success, clear state
             if (timeSinceLastAttempt > resetWindow)
             {
-                _logger.LogInformation(
+                Logger.LogInformation(
                     "Jfresolve FAILOVER: Reset for {Key} - {Time:F1}s since last attempt (success assumed)",
                     cacheKey, timeSinceLastAttempt.TotalSeconds
                 );
@@ -1678,7 +1683,7 @@ public class JfresolveApiController : ControllerBase
             // Grace period: keep serving same link to allow buffering
             if (timeSinceFirstAttempt < gracePeriod)
             {
-                _logger.LogDebug(
+                Logger.LogDebug(
                     "Jfresolve FAILOVER: Grace period for {Key} - {Time:F1}s/{Grace}s elapsed, serving index {Index} (attempt #{Attempt})",
                     cacheKey, timeSinceFirstAttempt.TotalSeconds, gracePeriod.TotalSeconds, state.CurrentIndex, state.AttemptCount + 1
                 );
@@ -1697,14 +1702,14 @@ public class JfresolveApiController : ControllerBase
             if (effectiveIndex >= totalStreams)
             {
                 effectiveIndex = 0;
-                _logger.LogWarning(
+                Logger.LogWarning(
                     "Jfresolve FAILOVER: Exhausted all {Count} streams for {Key}, wrapping to index 0 (attempt #{Attempt})",
                     totalStreams, cacheKey, state.AttemptCount + 1
                 );
             }
             else
             {
-                _logger.LogWarning(
+                Logger.LogWarning(
                     "Jfresolve FAILOVER: Grace period expired for {Key}. " +
                     "Switching from index {OldIndex} to {NewIndex}/{Total} (attempt #{Attempt})",
                     cacheKey, state.CurrentIndex, effectiveIndex, totalStreams, state.AttemptCount + 1
@@ -1722,7 +1727,7 @@ public class JfresolveApiController : ControllerBase
         else
         {
             // First attempt for this content/quality
-            _logger.LogInformation(
+            Logger.LogInformation(
                 "Jfresolve FAILOVER: First attempt for {Key}, serving index {Index}",
                 cacheKey, effectiveIndex
             );
@@ -1754,7 +1759,7 @@ public class JfresolveApiController : ControllerBase
             // Authentication/Authorization errors
             errorMessage = "Authentication failed: Stream server requires authentication or access is denied";
             httpStatusCode = 502; // Bad Gateway - upstream authentication issue
-            _logger.LogWarning("Jfresolve: Authentication error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogWarning("Jfresolve: Authentication error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
                 statusCode, type, id, redirectUrl);
         }
         else if (statusCode == 404)
@@ -1762,7 +1767,7 @@ public class JfresolveApiController : ControllerBase
             // Not found errors
             errorMessage = "Stream not found: The requested stream is no longer available";
             httpStatusCode = 404; // Not Found - pass through to client
-            _logger.LogWarning("Jfresolve: Stream not found (404) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogWarning("Jfresolve: Stream not found (404) for {Type}/{Id} from {RedirectUrl}", 
                 type, id, redirectUrl);
         }
         else if (statusCode >= 500 && statusCode < 600)
@@ -1770,7 +1775,7 @@ public class JfresolveApiController : ControllerBase
             // Server errors
             errorMessage = "Stream server error: The stream server is experiencing issues";
             httpStatusCode = 502; // Bad Gateway - upstream server error
-            _logger.LogError("Jfresolve: Stream server error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogError("Jfresolve: Stream server error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
                 statusCode, type, id, redirectUrl);
         }
         else if (statusCode == 429)
@@ -1778,7 +1783,7 @@ public class JfresolveApiController : ControllerBase
             // Rate limiting
             errorMessage = "Rate limit exceeded: Too many requests to stream server";
             httpStatusCode = 503; // Service Unavailable
-            _logger.LogWarning("Jfresolve: Rate limit (429) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogWarning("Jfresolve: Rate limit (429) for {Type}/{Id} from {RedirectUrl}", 
                 type, id, redirectUrl);
         }
         else if (statusCode >= 400 && statusCode < 500)
@@ -1786,7 +1791,7 @@ public class JfresolveApiController : ControllerBase
             // Other client errors
             errorMessage = $"Stream request error: The stream server rejected the request (HTTP {statusCode})";
             httpStatusCode = 502; // Bad Gateway
-            _logger.LogWarning("Jfresolve: Client error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogWarning("Jfresolve: Client error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
                 statusCode, type, id, redirectUrl);
         }
         else
@@ -1794,7 +1799,7 @@ public class JfresolveApiController : ControllerBase
             // Unknown errors
             errorMessage = $"Unexpected stream error: HTTP {statusCode}";
             httpStatusCode = 502; // Bad Gateway
-            _logger.LogError("Jfresolve: Unexpected error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            Logger.LogError("Jfresolve: Unexpected error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
                 statusCode, type, id, redirectUrl);
         }
         
@@ -1831,7 +1836,7 @@ public class JfresolveApiController : ControllerBase
                 // Don't retry on 4xx errors (client errors) - these are permanent failures
                 if ((int)response.StatusCode >= 400 && (int)response.StatusCode < 500)
                 {
-                    _logger.LogWarning("Jfresolve: Stream {Operation} failed with client error {StatusCode}, not retrying", 
+                    Logger.LogWarning("Jfresolve: Stream {Operation} failed with client error {StatusCode}, not retrying", 
                         operationName, response.StatusCode);
                     // Request will be disposed when response is disposed
                     return response; // Return the error response
@@ -1844,7 +1849,7 @@ public class JfresolveApiController : ControllerBase
                     {
                         // Retry on server errors
                         var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                        _logger.LogWarning(
+                        Logger.LogWarning(
                             "Jfresolve: Stream {Operation} failed with {StatusCode}, retrying in {Delay}ms (attempt {Attempt}/{Max})",
                             operationName, response.StatusCode, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
                         response.Dispose();
@@ -1866,7 +1871,7 @@ public class JfresolveApiController : ControllerBase
                     // Retry on network errors
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
+                    Logger.LogWarning(
                         "Jfresolve: Stream {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
                     await Task.Delay(delay, cancellationToken);
@@ -1886,7 +1891,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
+                    Logger.LogWarning(
                         "Jfresolve: Stream {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
                     await Task.Delay(delay, cancellationToken);
@@ -1899,7 +1904,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
+                    Logger.LogWarning(
                         "Jfresolve: Stream {Operation} timeout exception, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
                     await Task.Delay(delay, cancellationToken);
@@ -1912,7 +1917,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
+                    Logger.LogWarning(
                         "Jfresolve: Stream {Operation} IO error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
                     await Task.Delay(delay, cancellationToken);
@@ -1925,7 +1930,7 @@ public class JfresolveApiController : ControllerBase
                 {
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
+                    Logger.LogWarning(
                         "Jfresolve: Stream {Operation} unexpected error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
                     await Task.Delay(delay, cancellationToken);
@@ -1935,12 +1940,12 @@ public class JfresolveApiController : ControllerBase
 
         if (lastException != null)
         {
-            _logger.LogError(lastException, "Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts. Last error: {Error}", 
+            Logger.LogError(lastException, "Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts. Last error: {Error}", 
                 operationName, Constants.MaxStreamRetryAttempts, lastException.Message);
         }
         else
         {
-            _logger.LogError("Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts (no exception details available)", 
+            Logger.LogError("Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts (no exception details available)", 
                 operationName, Constants.MaxStreamRetryAttempts);
         }
         return null;
@@ -2357,7 +2362,7 @@ public class JfresolveApiController : ControllerBase
 
             if (string.IsNullOrWhiteSpace(location))
             {
-                _logger.LogWarning("Jfresolve: Redirect response has no Location header");
+                Logger.LogWarning("Jfresolve: Redirect response has no Location header");
                 if (currentResponse != response)
                 {
                     currentResponse.Dispose();
@@ -2374,7 +2379,7 @@ public class JfresolveApiController : ControllerBase
                 }
                 else
                 {
-                    _logger.LogWarning("Jfresolve: Invalid redirect location: {Location}", location);
+                    Logger.LogWarning("Jfresolve: Invalid redirect location: {Location}", location);
                     if (currentResponse != response)
                     {
                         currentResponse.Dispose();
@@ -2386,7 +2391,7 @@ public class JfresolveApiController : ControllerBase
             // Validate redirect URL to prevent SSRF
             if (!IsValidStreamUrl(location))
             {
-                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {Location}", location);
+                Logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {Location}", location);
                 if (currentResponse != response)
                 {
                     currentResponse.Dispose();
@@ -2395,7 +2400,7 @@ public class JfresolveApiController : ControllerBase
             }
 
             redirectCount++;
-            _logger.LogDebug("Jfresolve: Following redirect #{Count} to {Location}", redirectCount, location);
+            Logger.LogDebug("Jfresolve: Following redirect #{Count} to {Location}", redirectCount, location);
 
             // Dispose previous response if it's not the original
             if (currentResponse != response)
