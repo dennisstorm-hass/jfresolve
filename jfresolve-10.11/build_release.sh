@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Build release, create jfresolve.zip, and print MD5 for repository.json.
 # Run from repo root or jfresolve-10.11. After running, update repository.json
-# "checksum" for version 1.0.0.48 with the printed MD5.
+# "checksum" for the built version with the printed MD5.
+#
+# If you see NuGet SSL/certificate errors (NU1301, "bad certificate format"),
+# run this script with full permissions (e.g. in Cursor: run the build command
+# with "all" permissions so restore/publish can access the network and cert store).
 
 set -e
 cd "$(dirname "$0")"

@@ -1,0 +1,11 @@
+---
+description: Build and release commands for jfresolve
+globs: 
+  - "**/build_release.sh"
+  - "**/Jfresolve.csproj"
+---
+
+# Build and release
+
+- When running **dotnet restore**, **dotnet publish**, or **./build_release.sh** in this repo, use **full permissions** (`required_permissions: ["all"]`). The sandbox can block NuGet (SSL/certificate access), causing NU1301 and hiding real build errors.
+- Release zip lives in `jfresolve-10.11/jfresolve.zip`. Update `repository.json` checksum for the built version with the MD5 printed by `build_release.sh`.

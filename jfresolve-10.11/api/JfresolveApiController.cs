@@ -62,14 +62,14 @@ public class JfresolveApiController : ControllerBase
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
-        ILogger<JfresolveApiController> logger,
+        ILoggerFactory loggerFactory,
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
-        _logger = logger;
+        _logger = loggerFactory.CreateLogger<JfresolveApiController>();
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");

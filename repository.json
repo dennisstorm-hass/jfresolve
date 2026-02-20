@@ -9,10 +9,18 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.50",
+        "changelog": "Release 1.0.0.50.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.50/jfresolve.zip",
+        "checksum": "134abc424a19f5e2e9640baf73b3fea5",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T16:00:00Z"
+      },
+      {
         "version": "1.0.0.49",
-        "changelog": "Fix: Plugin image and settings button missing in 1.0.0.48. Register ILogger<JfresolveApiController> and JfresolveApiController in DI so plugin routes (Image, config) activate correctly.",
+        "changelog": "Fix: Plugin image and settings button missing. Use ILoggerFactory in API controller instead of ILogger<T> so Image/config routes activate under Jellyfin's plugin DI scope.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.49/jfresolve.zip",
-        "checksum": "cb51aff22781c28e43af9a7dc1f53561",
+        "checksum": "da3c70cdccf6f8c3afc954412df3e9e7",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-02-20T14:00:00Z"
       },
