@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.52",
+        "changelog": "Fix: Plugin image and settings. Serve plugin image via IStartupFilter middleware so Image route does not depend on controller DI.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.52/jfresolve.zip",
+        "checksum": "776146614c0e34a9d6d60c64f6ebfbd0",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T20:00:00Z"
+      },
+      {
         "version": "1.0.0.51",
         "changelog": "Fix: Plugin image and settings. Register logging in plugin scope (AddLogging) so ILoggerFactory is available when activating API controller.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.51/jfresolve.zip",

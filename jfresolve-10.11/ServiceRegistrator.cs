@@ -15,6 +15,7 @@ using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.MediaInfo;
+using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -26,9 +27,8 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
-        // Plugin controller (Image/config) is activated from a scope that only has plugin services.
-        // Ensure logging is available so ILoggerFactory can be resolved for JfresolveApiController.
-        services.AddLogging();
+        // Serve plugin image via middleware so /Plugins/{guid}/{version}/Image works without controller DI.
+        services.AddSingleton<IStartupFilter, PluginImageStartupFilter>();
 
         // Register circuit breaker factory
         services.AddSingleton<Services.CircuitBreakerFactory>();
