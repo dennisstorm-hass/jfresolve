@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.57",
+        "changelog": "Fix: Remove resolve endpoint authorization. Allow all requests to resolve URL so FFmpeg streaming works regardless of host ABI; Jellyfin already controls who can trigger playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.57/jfresolve.zip",
+        "checksum": "47074d33cbda2a4f6f760ba6a02508d3",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T08:30:51Z"
+      },
+      {
         "version": "1.0.0.56",
         "changelog": "Fix: Streaming EntryPointNotFoundException in IsRequestAuthorized. Stop reading Request.Headers (Referer/User-Agent) to avoid host ABI mismatch; rely on localhost, private IP + host, and authenticated user only.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.56/jfresolve.zip",
