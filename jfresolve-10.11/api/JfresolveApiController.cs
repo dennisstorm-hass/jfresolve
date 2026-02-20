@@ -14,6 +14,7 @@ using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -37,17 +38,24 @@ internal enum StreamStopReason
 public class JfresolveApiController : ControllerBase
 {
     private ILogger<JfresolveApiController>? _logger;
-    private readonly IHttpClientFactory _httpClientFactory;
-    private readonly StreamQualitySelector _qualitySelector;
-    private readonly Services.CircuitBreaker _addonCircuitBreaker;
-    private readonly Services.UserPreferencesService _userPrefs;
-    private readonly IAuthorizationContext _authContext;
+    private IHttpClientFactory? _httpClientFactory;
+    private StreamQualitySelector? _qualitySelector;
+    private Services.CircuitBreaker? _addonCircuitBreaker;
+    private Services.UserPreferencesService? _userPrefs;
+    private IAuthorizationContext? _authContext;
 
     /// <summary>Logger resolved lazily so controller can be activated when plugin scope has no ILoggerFactory (e.g. Image route).</summary>
     private ILogger<JfresolveApiController> Logger =>
         _logger ??= HttpContext?.RequestServices?.GetService(typeof(ILoggerFactory)) is ILoggerFactory factory
             ? factory.CreateLogger<JfresolveApiController>()
             : NullLogger<JfresolveApiController>.Instance;
+
+    /// <summary>Services resolved lazily so controller can be activated for Image/config routes (plugin scope may not provide them at construction).</summary>
+    private IHttpClientFactory HttpClientFactory => _httpClientFactory ??= HttpContext!.RequestServices.GetRequiredService<IHttpClientFactory>();
+    private StreamQualitySelector QualitySelector => _qualitySelector ??= HttpContext!.RequestServices.GetRequiredService<StreamQualitySelector>();
+    private Services.CircuitBreaker AddonCircuitBreaker => _addonCircuitBreaker ??= HttpContext!.RequestServices.GetRequiredService<Services.CircuitBreakerFactory>().GetOrCreate("StremioAddon");
+    private Services.UserPreferencesService UserPrefs => _userPrefs ??= HttpContext!.RequestServices.GetRequiredService<Services.UserPreferencesService>();
+    private IAuthorizationContext AuthContext => _authContext ??= HttpContext!.RequestServices.GetRequiredService<IAuthorizationContext>();
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -68,18 +76,8 @@ public class JfresolveApiController : ControllerBase
     private static readonly ConcurrentDictionary<string, (string FinalUrl, DateTime Expiry)> _resolvedUrlCache = new();
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
-    public JfresolveApiController(
-        IHttpClientFactory httpClientFactory,
-        StreamQualitySelector qualitySelector,
-        Services.CircuitBreakerFactory circuitBreakerFactory,
-        Services.UserPreferencesService userPrefs,
-        IAuthorizationContext authContext)
+    public JfresolveApiController()
     {
-        _httpClientFactory = httpClientFactory;
-        _qualitySelector = qualitySelector;
-        _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
-        _userPrefs = userPrefs;
-        _authContext = authContext;
     }
 
     /// <summary>
@@ -160,7 +158,7 @@ public class JfresolveApiController : ControllerBase
         var preferHdrOverDolbyVision = config.PreferHdrOverDolbyVision;
         if (userId.HasValue)
         {
-            var userPrefs = _userPrefs.Get(userId.Value);
+            var userPrefs = UserPrefs.Get(userId.Value);
             preferHdrOverDolbyVision = userPrefs.PreferHdrOverDolbyVision ?? config.PreferHdrOverDolbyVision;
         }
 
@@ -459,10 +457,10 @@ public class JfresolveApiController : ControllerBase
             Logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
 
             // Call the Stremio addon to get the stream (with circuit breaker protection)
-        var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
+        var addonHttpClient = HttpClientFactory.CreateClient("Jfresolve.Addon");
         addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
         addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
-            var response = await _addonCircuitBreaker.ExecuteAsync(
+            var response = await AddonCircuitBreaker.ExecuteAsync(
                 async () => await addonHttpClient.GetStringAsync(streamUrl),
                 async () => { Logger.LogWarning("Circuit breaker open for Stremio addon, returning null"); return (string?)null; });
             
@@ -675,7 +673,7 @@ public class JfresolveApiController : ControllerBase
             int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
 
             // Select the stream using failover-adjusted index
-        var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
+        var selectedStream = QualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
                 Logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
@@ -741,7 +739,7 @@ public class JfresolveApiController : ControllerBase
             attemptedIndices.Add(effectiveIndex);
             
             // Select the stream
-            var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
+            var selectedStream = QualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
             if (selectedStream == null)
             {
                 Logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);
@@ -800,7 +798,7 @@ public class JfresolveApiController : ControllerBase
     {
         try
         {
-            var testClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
+            var testClient = HttpClientFactory.CreateClient("Jfresolve.Stream");
             testClient.Timeout = TimeSpan.FromSeconds(10); // Short timeout for testing
             
             using var request = new HttpRequestMessage(HttpMethod.Head, url);
@@ -857,7 +855,7 @@ public class JfresolveApiController : ControllerBase
             Response.Headers["Pragma"] = Constants.PragmaNoCache;
             Response.Headers["Expires"] = Constants.ExpiresZero;
             
-            var streamHttpClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
+            var streamHttpClient = HttpClientFactory.CreateClient("Jfresolve.Stream");
             // Use a very long timeout (4 hours) to handle long movies/episodes without interruption
             // The timeout applies to the entire operation including all read operations
             streamHttpClient.Timeout = TimeSpan.FromHours(Constants.StreamRequestTimeoutHours);
@@ -1491,7 +1489,7 @@ public class JfresolveApiController : ControllerBase
             return Unauthorized("Must be logged in to view user settings");
 
         var config = JfresolvePlugin.Instance?.Configuration;
-        var prefs = _userPrefs.Get(userId.Value);
+        var prefs = UserPrefs.Get(userId.Value);
         return Ok(new
         {
             preferHdrOverDolbyVision = prefs.PreferHdrOverDolbyVision ?? config?.PreferHdrOverDolbyVision ?? true
@@ -1509,10 +1507,10 @@ public class JfresolveApiController : ControllerBase
         if (userId == null)
             return Unauthorized("Must be logged in to save user settings");
 
-        var prefs = _userPrefs.Get(userId.Value);
+        var prefs = UserPrefs.Get(userId.Value);
         if (dto.PreferHdrOverDolbyVision.HasValue)
             prefs.PreferHdrOverDolbyVision = dto.PreferHdrOverDolbyVision.Value;
-        _userPrefs.Set(userId.Value, prefs);
+        UserPrefs.Set(userId.Value, prefs);
         return Ok(new { saved = true });
     }
 
@@ -1520,7 +1518,7 @@ public class JfresolveApiController : ControllerBase
     {
         try
         {
-            var authInfo = await _authContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
+            var authInfo = await AuthContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
             if (authInfo != null && authInfo.IsAuthenticated)
             {
                 if (authInfo.UserId != Guid.Empty)
@@ -1628,7 +1626,7 @@ public class JfresolveApiController : ControllerBase
         // If quality is specified, count only matching streams
         if (!string.IsNullOrEmpty(quality))
         {
-            var filteredStreams = _qualitySelector.FilterStreamsByQuality(streamArray, quality);
+            var filteredStreams = QualitySelector.FilterStreamsByQuality(streamArray, quality);
             totalStreams = filteredStreams.Count;
 
             if (totalStreams == 0)

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.54",
+        "changelog": "Fix: Plugin image and settings. Make API controller activatable with no constructor dependencies; resolve all services lazily from RequestServices so Image/config routes work.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.54/jfresolve.zip",
+        "checksum": "efc6e475d1dc24c59f40692498e98c02",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T23:00:00Z"
+      },
+      {
         "version": "1.0.0.53",
         "changelog": "Fix: Plugin image and settings. Make API controller activatable without ILoggerFactory (lazy logger + NullLogger fallback) so Image/config routes work under Jellyfin plugin scope.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.53/jfresolve.zip",
