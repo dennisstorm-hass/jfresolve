@@ -7,6 +7,7 @@ using Jfresolve.Decorators;
 using Jfresolve.Filters;
 using Jfresolve.Providers;
 using Jfresolve.ScheduledTasks;
+using Jfresolve.Services;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
@@ -30,6 +31,10 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 
         // Register core services
         services.AddSingleton<TmdbService>();
+        services.AddSingleton<SpotifyMetadataService>();
+        services.AddSingleton<FlacTaggingService>();
+        services.AddSingleton<IFlacSearchService, ConfigurableFlacSearchService>();
+        services.AddSingleton<MusicResolverService>();
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
         services.AddSingleton<Services.StreamQualitySelector>();
@@ -177,6 +182,12 @@ public class JfresolveFFmpegConfigService : IHostedService
                 {
                     JfresolveManager.SeedFolder(config.AnimePath);
                     _log.LogInformation("Jfresolve: [Simple] Initialized seed folder for anime at '{Path}'", config.AnimePath);
+                }
+
+                if (config.EnableMusicMode && !string.IsNullOrWhiteSpace(config.MusicDownloadFolder))
+                {
+                    JfresolveManager.SeedFolder(config.MusicDownloadFolder);
+                    _log.LogInformation("Jfresolve: [Music] Initialized music download folder at '{Path}'", config.MusicDownloadFolder);
                 }
             }
             else

@@ -96,4 +96,13 @@ public static class Constants
     public static readonly TimeSpan AddonHttpClientHandlerLifetime = TimeSpan.FromMinutes(5); // Handler lifetime for addon client
     public const int StreamHttpClientMaxConnectionsPerServer = 20; // Max connections for streaming requests
     public static readonly TimeSpan StreamHttpClientHandlerLifetime = TimeSpan.FromHours(1); // Handler lifetime for stream client (supports long playback sessions)
+
+    // Music / Spotify
+    public const string SpotifyWebUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+    public const int SpotifyRequestTimeoutSeconds = 15;
+    public const int SpotifyMaxSearchResults = 20;
+    public static readonly TimeSpan SpotifyRateLimitBackoffBase = TimeSpan.FromSeconds(5);
+    public const int MusicDownloadTimeoutSeconds = 120;
+    public const int MaxConcurrentMusicDownloadsMin = 1;
+    public const int MaxConcurrentMusicDownloadsMax = 10;
 }

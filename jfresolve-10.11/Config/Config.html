@@ -944,6 +944,75 @@
                                 </div>
                             </div>
 
+                            <!-- Music Mode (SpotiFLAC-style) -->
+                            <div class="section-card">
+                                <h3 class="section-title">Music Mode</h3>
+                                <div class="alert-info">
+                                    Search for music via Spotify metadata, download FLAC to a library folder,
+                                    and embed metadata. Requires a FLAC source endpoint (optional).
+                                </div>
+                                <div class="checkboxContainer field-group">
+                                    <label class="emby-checkbox-label" for="EnableMusicMode">
+                                        <input type="checkbox" is="emby-checkbox" id="EnableMusicMode" />
+                                        <span class="checkbox-label-text">Enable Music Mode</span>
+                                    </label>
+                                    <div class="field-description">
+                                        When enabled, search can return music (Spotify). Selecting a track
+                                        downloads FLAC to the folder below and triggers a library scan.
+                                    </div>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="MusicDownloadFolder">Music Download Folder</label>
+                                    <input type="text" id="MusicDownloadFolder" is="emby-input" class="emby-input" placeholder="/path/to/music/library" />
+                                    <div class="field-description">
+                                        Server path that is part of a Jellyfin music library. Downloaded FLAC files will be saved here.
+                                    </div>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="PreferredAudioQuality">Preferred Audio Quality</label>
+                                    <select is="emby-select" id="PreferredAudioQuality" class="emby-select-withcolor emby-select">
+                                        <option value="FLAC">FLAC</option>
+                                        <option value="Hi-Res">Hi-Res</option>
+                                        <option value="High">High</option>
+                                        <option value="Standard">Standard</option>
+                                    </select>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="SpotifyMetadataEndpointBase">Spotify Metadata Endpoint Base</label>
+                                    <input type="text" id="SpotifyMetadataEndpointBase" is="emby-input" class="emby-input" placeholder="https://api.spotify.com/v1" />
+                                    <div class="field-description">
+                                        Base URL for Spotify-style API (e.g. proxy with token). Default: api.spotify.com/v1
+                                    </div>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="MaxConcurrentMusicDownloads">Max Concurrent Music Downloads</label>
+                                    <input type="number" id="MaxConcurrentMusicDownloads" is="emby-input" min="1" max="10" value="3" />
+                                </div>
+                                <div class="checkboxContainer field-group">
+                                    <label class="emby-checkbox-label" for="EnableAutoDownloadOnSearch">
+                                        <input type="checkbox" is="emby-checkbox" id="EnableAutoDownloadOnSearch" />
+                                        <span class="checkbox-label-text">Auto-Download on Search Result Select</span>
+                                    </label>
+                                    <div class="field-description">
+                                        When enabled, opening a music search result triggers download immediately.
+                                    </div>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="MusicSearchPrefix">Music Search Prefix (optional)</label>
+                                    <input type="text" id="MusicSearchPrefix" is="emby-input" class="emby-input" placeholder="music: or m:" />
+                                    <div class="field-description">
+                                        If set, only queries starting with this prefix are treated as music search (e.g. "music: artist name").
+                                    </div>
+                                </div>
+                                <div class="inputContainer field-group">
+                                    <label class="inputLabel" for="FlacSearchEndpointUrl">FLAC Search Endpoint URL (optional)</label>
+                                    <input type="text" id="FlacSearchEndpointUrl" is="emby-input" class="emby-input" placeholder="https://your-flac-service/search" />
+                                    <div class="field-description">
+                                        HTTP endpoint that accepts ?artist=&track=&album= and returns JSON with "url" or "flacUrl" for direct download. Leave empty to disable downloads.
+                                    </div>
+                                </div>
+                            </div>
+
                             <div style="margin-top: 40px">
                                 <button
                                     is="emby-button"
@@ -1119,6 +1188,16 @@
                                 "FailoverWindowSeconds",
                             ).value = config.FailoverWindowSeconds || 120;
 
+                            // Music
+                            document.getElementById("EnableMusicMode").checked = config.EnableMusicMode || false;
+                            document.getElementById("MusicDownloadFolder").value = config.MusicDownloadFolder || "";
+                            document.getElementById("PreferredAudioQuality").value = config.PreferredAudioQuality || "FLAC";
+                            document.getElementById("SpotifyMetadataEndpointBase").value = config.SpotifyMetadataEndpointBase || "https://api.spotify.com/v1";
+                            document.getElementById("MaxConcurrentMusicDownloads").value = config.MaxConcurrentMusicDownloads || 3;
+                            document.getElementById("EnableAutoDownloadOnSearch").checked = config.EnableAutoDownloadOnSearch !== false;
+                            document.getElementById("MusicSearchPrefix").value = config.MusicSearchPrefix || "";
+                            document.getElementById("FlacSearchEndpointUrl").value = config.FlacSearchEndpointUrl || "";
+
                             toggleSections();
                             var linkEl = document.getElementById("linkUserPlaybackPrefs");
                             if (linkEl && typeof ApiClient !== "undefined" && ApiClient.serverAddress) {
@@ -1286,6 +1365,16 @@
                                         "FailoverWindowSeconds",
                                     ).value,
                                 ) || 120;
+
+                            // Music
+                            config.EnableMusicMode = document.getElementById("EnableMusicMode").checked;
+                            config.MusicDownloadFolder = document.getElementById("MusicDownloadFolder").value;
+                            config.PreferredAudioQuality = document.getElementById("PreferredAudioQuality").value;
+                            config.SpotifyMetadataEndpointBase = document.getElementById("SpotifyMetadataEndpointBase").value;
+                            config.MaxConcurrentMusicDownloads = parseInt(document.getElementById("MaxConcurrentMusicDownloads").value) || 3;
+                            config.EnableAutoDownloadOnSearch = document.getElementById("EnableAutoDownloadOnSearch").checked;
+                            config.MusicSearchPrefix = document.getElementById("MusicSearchPrefix").value;
+                            config.FlacSearchEndpointUrl = document.getElementById("FlacSearchEndpointUrl").value;
 
                             ApiClient.updatePluginConfiguration(
                                 JfresolveConfig.pluginUniqueId,

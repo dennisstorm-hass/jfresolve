@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
+using Jfresolve;
 using MediaBrowser.Controller.Dto;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Model.Dto;
@@ -71,8 +72,17 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
             return;
         }
 
+        var config = JfresolvePlugin.Instance?.Configuration;
+        bool musicOnly = false;
+        if (config?.EnableMusicMode == true && !string.IsNullOrWhiteSpace(config.MusicSearchPrefix)
+            && searchTerm.StartsWith(config.MusicSearchPrefix, StringComparison.OrdinalIgnoreCase))
+        {
+            searchTerm = searchTerm.Substring(config.MusicSearchPrefix.Length).Trim();
+            musicOnly = true;
+        }
+
         // Get requested item types from query parameters
-        var requestedTypes = GetRequestedItemTypes(ctx);
+        var requestedTypes = GetRequestedItemTypes(ctx, musicOnly);
         if (requestedTypes.Count == 0)
         {
             // No supported types requested, let Jellyfin handle it
@@ -84,8 +94,8 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
         ctx.TryGetActionArgument("startIndex", out var start, 0);
         ctx.TryGetActionArgument("limit", out var limit, 25);
 
-        // Search TMDB for all requested types
-        var baseItems = await SearchTmdbAsync(searchTerm, requestedTypes);
+        // Search TMDB and/or Spotify depending on requested types
+        var baseItems = await SearchTmdbAndMusicAsync(searchTerm, requestedTypes);
 
         _log.LogInformation(
             "Jfresolve: Intercepted /Items search \"{Query}\" types=[{Types}] start={Start} limit={Limit} results={Results}",
@@ -114,16 +124,29 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
     }
 
     /// <summary>
-    /// Search TMDB for all requested item types (similar to Gelato's SearchMetasAsync)
+    /// Search TMDB for video types and Spotify for Audio (when music mode enabled).
     /// </summary>
-    private async Task<List<BaseItem>> SearchTmdbAsync(string searchTerm, HashSet<BaseItemKind> requestedTypes)
+    private async Task<List<BaseItem>> SearchTmdbAndMusicAsync(string searchTerm, HashSet<BaseItemKind> requestedTypes)
     {
+        var config = JfresolvePlugin.Instance?.Configuration;
+        var videoTypes = requestedTypes.Where(t => t == BaseItemKind.Movie || t == BaseItemKind.Series).ToHashSet();
+        var wantMusic = requestedTypes.Contains(BaseItemKind.Audio) && config?.EnableMusicMode == true;
+
         var tasks = new List<Task<List<BaseItem>>>();
 
-        foreach (var itemType in requestedTypes)
+        foreach (var itemType in videoTypes)
         {
             tasks.Add(_manager.SearchTmdbAsync(searchTerm, itemType));
         }
+
+        if (wantMusic)
+        {
+            var limit = config?.SearchResultLimit ?? Constants.SpotifyMaxSearchResults;
+            tasks.Add(_manager.SearchSpotifyAsync(searchTerm, Math.Min(limit, Constants.SpotifyMaxSearchResults)));
+        }
+
+        if (tasks.Count == 0)
+            return new List<BaseItem>();
 
         var results = await Task.WhenAll(tasks);
         return results.SelectMany(r => r).ToList();
@@ -175,11 +198,23 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
         return false;
     }
 
-    private HashSet<BaseItemKind> GetRequestedItemTypes(ActionExecutingContext ctx)
+    private HashSet<BaseItemKind> GetRequestedItemTypes(ActionExecutingContext ctx, bool musicOnly)
     {
-        var requested = new HashSet<BaseItemKind>(
-            new[] { BaseItemKind.Movie, BaseItemKind.Series }
-        );
+        var supportedVideo = new[] { BaseItemKind.Movie, BaseItemKind.Series };
+        var supportedMusic = new[] { BaseItemKind.Audio };
+        var config = JfresolvePlugin.Instance?.Configuration;
+        var allowMusic = config?.EnableMusicMode == true;
+
+        if (musicOnly && allowMusic)
+        {
+            return new HashSet<BaseItemKind>(supportedMusic);
+        }
+
+        var requested = new HashSet<BaseItemKind>(supportedVideo);
+        if (allowMusic)
+        {
+            requested.Add(BaseItemKind.Audio);
+        }
 
         // Check for includeItemTypes parameter
         if (ctx.TryGetActionArgument<BaseItemKind[]>("includeItemTypes", out var includeTypes)
@@ -187,8 +222,14 @@ public class SearchActionFilter : IAsyncActionFilter, IOrderedFilter
             && includeTypes.Length > 0)
         {
             requested = new HashSet<BaseItemKind>(includeTypes);
-            // Only keep Movie and Series (we only support these types)
-            requested.IntersectWith(new[] { BaseItemKind.Movie, BaseItemKind.Series });
+            requested.IntersectWith(supportedVideo.Concat(allowMusic ? supportedMusic : Array.Empty<BaseItemKind>()));
+
+            // Main-page search: client often sends only [Movie, Series]. Add Audio when music mode is on
+            // so that search results show a "Music" category alongside Movies and Shows.
+            if (allowMusic && (requested.Contains(BaseItemKind.Movie) || requested.Contains(BaseItemKind.Series)))
+            {
+                requested.Add(BaseItemKind.Audio);
+            }
         }
 
         // Remove excluded types
