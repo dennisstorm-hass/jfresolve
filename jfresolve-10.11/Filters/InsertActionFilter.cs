@@ -4,9 +4,6 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
-using Jfresolve;
-using Jfresolve.Music;
-using Jfresolve.Services;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Library;
 using Microsoft.AspNetCore.Mvc.Filters;
@@ -15,28 +12,25 @@ using Microsoft.Extensions.Logging;
 namespace Jfresolve.Filters;
 
 /// <summary>
-/// Intercepts item detail/playback requests and materializes virtual TMDB items into the database.
-/// For music (Spotify), triggers FLAC download and library scan, then replaces with real item.
+/// Intercepts item detail/playback requests and materializes virtual TMDB items into the database
+/// Copied from Gelato's InsertActionFilter pattern
 /// </summary>
 public class InsertActionFilter : IAsyncActionFilter, IOrderedFilter
 {
     private readonly ILibraryManager _library;
     private readonly ILogger<InsertActionFilter> _log;
     private readonly JfresolveManager _manager;
-    private readonly MusicResolverService _musicResolver;
 
     public int Order => 1;
 
     public InsertActionFilter(
         ILibraryManager library,
         JfresolveManager manager,
-        MusicResolverService musicResolver,
         ILogger<InsertActionFilter> log
     )
     {
         _library = library;
         _manager = manager;
-        _musicResolver = musicResolver;
         _log = log;
     }
 
@@ -58,36 +52,7 @@ public class InsertActionFilter : IAsyncActionFilter, IOrderedFilter
 
         _log.LogDebug("Jfresolve: InsertActionFilter triggered for GUID {Guid}", guid);
 
-        // Music (Spotify): download FLAC, tag, scan library, then replace GUID with real item
-        if (metadata is SpotifyTrackMetadata spotifyTrack)
-        {
-            var config = JfresolvePlugin.Instance?.Configuration;
-            if (config?.EnableMusicMode == true && config.EnableAutoDownloadOnSearch)
-            {
-                try
-                {
-                    var savedPath = await _musicResolver.DownloadAndSaveAsync(spotifyTrack, CancellationToken.None);
-                    if (!string.IsNullOrEmpty(savedPath))
-                    {
-                        var realItem = _musicResolver.FindItemByPath(savedPath);
-                        if (realItem != null)
-                        {
-                            _manager.ReplaceGuid(ctx, realItem.Id);
-                            _manager.RemoveTmdbMetadata(guid);
-                            _log.LogInformation("Jfresolve: Music item resolved to library item {Id}", realItem.Id);
-                        }
-                    }
-                }
-                catch (Exception ex)
-                {
-                    _log.LogWarning(ex, "Jfresolve: Music download failed for GUID {Guid}", guid);
-                }
-            }
-            await next();
-            return;
-        }
-
-        // Create temporary BaseItem to check provider IDs (video)
+        // Create temporary BaseItem to check provider IDs
         BaseItem item;
         if (metadata is TmdbMovie tmdbMovie)
         {

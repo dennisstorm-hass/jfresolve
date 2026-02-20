@@ -7,7 +7,6 @@ using Jfresolve.Decorators;
 using Jfresolve.Filters;
 using Jfresolve.Providers;
 using Jfresolve.ScheduledTasks;
-using Jfresolve.Services;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
@@ -15,7 +14,6 @@ using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.MediaInfo;
-using Microsoft.AspNetCore.Hosting;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
@@ -27,18 +25,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
-        // Serve plugin image via middleware so /Plugins/{guid}/{version}/Image works without controller DI.
-        services.AddSingleton<IStartupFilter, PluginImageStartupFilter>();
-
         // Register circuit breaker factory
         services.AddSingleton<Services.CircuitBreakerFactory>();
 
         // Register core services
         services.AddSingleton<TmdbService>();
-        services.AddSingleton<SpotifyMetadataService>();
-        services.AddSingleton<FlacTaggingService>();
-        services.AddSingleton<IFlacSearchService, ConfigurableFlacSearchService>();
-        services.AddSingleton<MusicResolverService>();
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
         services.AddSingleton<Services.StreamQualitySelector>();
@@ -186,12 +177,6 @@ public class JfresolveFFmpegConfigService : IHostedService
                 {
                     JfresolveManager.SeedFolder(config.AnimePath);
                     _log.LogInformation("Jfresolve: [Simple] Initialized seed folder for anime at '{Path}'", config.AnimePath);
-                }
-
-                if (config.EnableMusicMode && !string.IsNullOrWhiteSpace(config.MusicDownloadFolder))
-                {
-                    JfresolveManager.SeedFolder(config.MusicDownloadFolder);
-                    _log.LogInformation("Jfresolve: [Music] Initialized music download folder at '{Path}'", config.MusicDownloadFolder);
                 }
             }
             else

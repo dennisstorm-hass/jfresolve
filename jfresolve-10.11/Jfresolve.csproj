@@ -6,9 +6,9 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Jfresolve</AssemblyName>
     <RootNamespace>Jfresolve</RootNamespace>
-    <Version>1.0.0.57</Version>
-    <AssemblyVersion>1.0.0.57</AssemblyVersion>
-    <FileVersion>1.0.0.57</FileVersion>
+    <Version>1.0.0.47</Version>
+    <AssemblyVersion>1.0.0.47</AssemblyVersion>
+    <FileVersion>1.0.0.47</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
@@ -16,8 +16,6 @@
     <PackageReference Include="Jellyfin.Controller" Version="10.11.6" />
     <PackageReference Include="Jellyfin.Common" Version="10.11.6" />
     <PackageReference Include="Microsoft.AspNetCore.Connections.Abstractions" Version="9.0.0" />
-    <PackageReference Include="TagLibSharp" Version="2.3.0" />
-    <PackageReference Include="System.Net.Http.Json" Version="9.0.0" />
   </ItemGroup>
 
   <ItemGroup>

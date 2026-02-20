@@ -10,11 +10,8 @@ using System.Threading.Tasks;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using MediaBrowser.Controller.Entities;
-using MediaBrowser.Controller.Entities.Audio;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
-using Jfresolve.Music;
-using Jfresolve.Services;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Providers;
@@ -38,7 +35,6 @@ public class JfresolveManager
 {
     private readonly ILogger<JfresolveManager> _log;
     private readonly TmdbService _tmdbService;
-    private readonly SpotifyMetadataService _spotifyMetadataService;
     private readonly ILibraryManager _libraryManager;
     private readonly IItemRepository _repo;
     private readonly IProviderManager _provider;
@@ -68,7 +64,6 @@ public class JfresolveManager
     public JfresolveManager(
         ILogger<JfresolveManager> log,
         TmdbService tmdbService,
-        SpotifyMetadataService spotifyMetadataService,
         ILibraryManager libraryManager,
         IItemRepository repo,
         IProviderManager provider,
@@ -76,7 +71,6 @@ public class JfresolveManager
     {
         _log = log;
         _tmdbService = tmdbService;
-        _spotifyMetadataService = spotifyMetadataService;
         _libraryManager = libraryManager;
         _repo = repo;
         _provider = provider;
@@ -331,20 +325,6 @@ public class JfresolveManager
         return TryGetFolder(config.AnimePath);
     }
 
-    /// <summary>
-    /// Get music download folder if music mode is enabled
-    /// </summary>
-    public Folder? TryGetMusicFolder()
-    {
-        var config = JfresolvePlugin.Instance?.Configuration;
-        if (config == null || !config.EnableMusicMode || string.IsNullOrWhiteSpace(config.MusicDownloadFolder))
-        {
-            return null;
-        }
-
-        return TryGetFolder(config.MusicDownloadFolder);
-    }
-
     // ============ MODE-BASED PATH RESOLUTION ============
 
     /// <summary>
@@ -530,70 +510,6 @@ public class JfresolveManager
         return results;
     }
 
-    // ============ MUSIC (Spotify) SEARCH ============
-
-    /// <summary>
-    /// Search Spotify for tracks and return as Audio BaseItems (virtual items; download on access).
-    /// </summary>
-    public async Task<List<BaseItem>> SearchSpotifyAsync(string searchTerm, int limit = 20)
-    {
-        var results = new List<BaseItem>();
-        var config = JfresolvePlugin.Instance?.Configuration;
-        if (config == null || !config.EnableMusicMode)
-        {
-            return results;
-        }
-
-        var tracks = await _spotifyMetadataService.SearchTracksAsync(searchTerm, limit);
-        foreach (var track in tracks)
-        {
-            var audio = IntoBaseItem(track);
-            SaveTmdbMetadata(audio.Id, track);
-            results.Add(audio);
-        }
-
-        _log.LogInformation("Jfresolve: Returning {Count} music results from Spotify for '{Query}'", results.Count, searchTerm);
-        return results;
-    }
-
-    /// <summary>
-    /// Convert Spotify track to Audio BaseItem (virtual; Path = jfresolve protocol for download-on-access).
-    /// </summary>
-    public Audio IntoBaseItem(SpotifyTrackMetadata track)
-    {
-        var itemId = GenerateJfresolveGuid("music", track.Id, "", 0);
-        var config = JfresolvePlugin.Instance?.Configuration;
-        var serverUrl = config?.JellyfinServerUrl ?? "http://localhost:8096";
-        var normalizedUrl = serverUrl.TrimEnd('/');
-        var path = $"{normalizedUrl}/Plugins/Jfresolve/music/{Uri.EscapeDataString(track.Id)}";
-
-        var audio = new Audio
-        {
-            Id = itemId,
-            Name = track.Name ?? string.Empty,
-            Path = path,
-            IsVirtualItem = false,
-            Album = track.GetAlbumName(),
-            AlbumArtists = new[] { track.GetArtistName() },
-            IndexNumber = track.TrackNumber > 0 ? track.TrackNumber : null,
-            ParentIndexNumber = track.DiscNumber > 0 ? track.DiscNumber : null,
-            ProductionYear = int.TryParse(track.GetReleaseYear(), out var y) && y > 0 ? y : null,
-        };
-
-        audio.SetProviderId("Jfresolve", $"music:spotify:{track.Id}");
-        audio.SetProviderId("Spotify", track.Id);
-
-        if (!string.IsNullOrWhiteSpace(track.GetCoverImageUrl()))
-        {
-            audio.ImageInfos = new[]
-            {
-                new ItemImageInfo { Type = ImageType.Primary, Path = track.GetCoverImageUrl()! }
-            };
-        }
-
-        return audio;
-    }
-
     // ============ INTO BASE ITEM (Gelato pattern) ============
 
     /// <summary>
@@ -767,12 +683,7 @@ public class JfresolveManager
     /// </summary>
     private Guid GenerateJfresolveGuid(string mediaType, int tmdbId, string quality = "", int index = 0)
     {
-        return GenerateJfresolveGuid(mediaType, tmdbId.ToString(), quality, index);
-    }
-
-    private Guid GenerateJfresolveGuid(string mediaType, string id, string quality = "", int index = 0)
-    {
-        var uniqueString = $"jfresolve://{mediaType}/{id}";
+        var uniqueString = $"jfresolve://{mediaType}/{tmdbId}";
         if (!string.IsNullOrEmpty(quality))
         {
             uniqueString += $"/{quality}";

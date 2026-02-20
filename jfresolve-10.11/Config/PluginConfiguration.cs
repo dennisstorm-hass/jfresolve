@@ -232,57 +232,6 @@ public class PluginConfiguration : BasePluginConfiguration
     /// Default: 120 seconds (2 minutes)
     /// </summary>
     public int FailoverWindowSeconds { get; set; } = 120;
-
-    // ============ Music Mode (SpotiFLAC-style) ============
-
-    /// <summary>
-    /// Enable music mode: search Spotify, download FLAC to library folder, embed metadata.
-    /// When enabled, search can return music results and selecting a track triggers download.
-    /// </summary>
-    public bool EnableMusicMode { get; set; } = false;
-
-    /// <summary>
-    /// Folder path on the server where downloaded FLAC files are saved.
-    /// Must be a path that is part of a Jellyfin music library (so scans pick up new files).
-    /// </summary>
-    public string MusicDownloadFolder { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Preferred audio quality for downloads. Options: "FLAC", "Hi-Res", "High", "Standard".
-    /// Fallback order is used when a source does not have the preferred quality.
-    /// </summary>
-    public string PreferredAudioQuality { get; set; } = "FLAC";
-
-    /// <summary>
-    /// Base URL or pattern for Spotify public web API (reverse-engineered endpoints).
-    /// Leave default for built-in pattern. Change only if endpoints change for stability.
-    /// </summary>
-    public string SpotifyMetadataEndpointBase { get; set; } = "https://api.spotify.com/v1";
-
-    /// <summary>
-    /// Maximum number of concurrent music downloads (1–10). Default: 3.
-    /// </summary>
-    public int MaxConcurrentMusicDownloads { get; set; } = 3;
-
-    /// <summary>
-    /// When enabled, downloading starts as soon as the user selects a music search result (GetItem).
-    /// When disabled, download can still be triggered by attempting playback.
-    /// </summary>
-    public bool EnableAutoDownloadOnSearch { get; set; } = true;
-
-    /// <summary>
-    /// Optional prefix to force music search (e.g. "music:" or "m:").
-    /// When set, only queries starting with this prefix are treated as music searches.
-    /// When empty, music search is used when Music Mode is on and includeItemTypes includes Audio.
-    /// </summary>
-    public string MusicSearchPrefix { get; set; } = string.Empty;
-
-    /// <summary>
-    /// Optional URL for FLAC lookup. If set, the plugin will call this endpoint with query parameters
-    /// (artist, track, album) and expect JSON with a "url" or "flacUrl" property for direct download.
-    /// Leave empty to disable FLAC download (search and metadata only).
-    /// </summary>
-    public string FlacSearchEndpointUrl { get; set; } = string.Empty;
 }
 
 /// <summary>
