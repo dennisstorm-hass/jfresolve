@@ -3,6 +3,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Threading;
 using System.Threading.Tasks;
+using Jfresolve.Api;
 using Jfresolve.Decorators;
 using Jfresolve.Filters;
 using Jfresolve.Providers;
@@ -26,6 +27,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 {
     public void RegisterServices(IServiceCollection services, IServerApplicationHost host)
     {
+        // Ensure API controller can be activated (Image/config routes); plugin scope may not resolve ILogger<T> otherwise
+        services.AddSingleton<ILogger<JfresolveApiController>>(sp =>
+            sp.GetRequiredService<ILoggerFactory>().CreateLogger<JfresolveApiController>());
+        services.AddTransient<JfresolveApiController>();
+
         // Register circuit breaker factory
         services.AddSingleton<Services.CircuitBreakerFactory>();
 
