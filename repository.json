@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.55",
+        "changelog": "Fix: Streaming MissingMethodException (IHeaderDictionary.get_Item). Use TryGetValue/Append for request and response headers for host ASP.NET Core compatibility.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.55/jfresolve.zip",
+        "checksum": "26bbe5eee31c635cff4777c04e5a7506",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-02-20T08:15:34Z"
+      },
+      {
         "version": "1.0.0.54",
         "changelog": "Fix: Plugin image and settings. Make API controller activatable with no constructor dependencies; resolve all services lazily from RequestServices so Image/config routes work.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.54/jfresolve.zip",

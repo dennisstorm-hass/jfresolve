@@ -13,6 +13,7 @@ using Jfresolve.Services;
 using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -80,6 +81,19 @@ public class JfresolveApiController : ControllerBase
     {
     }
 
+    /// <summary>Get a request header value without using IHeaderDictionary indexer (avoids MissingMethodException when host uses different ASP.NET Core version).</summary>
+    private static string? GetRequestHeader(HttpRequest request, string name)
+    {
+        return request.Headers.TryGetValue(name, out var v) ? v.ToString() : null;
+    }
+
+    /// <summary>Set a response header without using IHeaderDictionary indexer (host compatibility).</summary>
+    private static void SetResponseHeader(IHeaderDictionary headers, string name, string value)
+    {
+        headers.Remove(name);
+        headers.Append(name, value);
+    }
+
     /// <summary>
     /// Tracks failover state with time windows
     /// </summary>
@@ -137,7 +151,7 @@ public class JfresolveApiController : ControllerBase
         Logger.LogInformation(
             "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
             type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A",
-            Request.Path, Request.Headers["Range"].ToString()
+            Request.Path, GetRequestHeader(Request, "Range") ?? ""
         );
 
         var config = JfresolvePlugin.Instance?.Configuration;
@@ -851,9 +865,9 @@ public class JfresolveApiController : ControllerBase
                 Logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
                 
             // Disable response buffering for optimal streaming performance
-            Response.Headers["Cache-Control"] = Constants.CacheControlNoCache;
-            Response.Headers["Pragma"] = Constants.PragmaNoCache;
-            Response.Headers["Expires"] = Constants.ExpiresZero;
+            SetResponseHeader(Response.Headers, "Cache-Control", Constants.CacheControlNoCache);
+            SetResponseHeader(Response.Headers, "Pragma", Constants.PragmaNoCache);
+            SetResponseHeader(Response.Headers, "Expires", Constants.ExpiresZero);
             
             var streamHttpClient = HttpClientFactory.CreateClient("Jfresolve.Stream");
             // Use a very long timeout (4 hours) to handle long movies/episodes without interruption
@@ -861,7 +875,7 @@ public class JfresolveApiController : ControllerBase
             streamHttpClient.Timeout = TimeSpan.FromHours(Constants.StreamRequestTimeoutHours);
                 
                 // Handle HTTP Range requests for seeking (required by FFmpeg)
-                var rangeHeader = Request.Headers["Range"].ToString();
+                var rangeHeader = GetRequestHeader(Request, "Range") ?? "";
             long? rangeStart = null;
                 
             // Parse range header to extract start position for workaround
@@ -1101,7 +1115,7 @@ public class JfresolveApiController : ControllerBase
                 long rangeLength = totalLength.Value - start;
                 
                 // Set Content-Range header: "bytes start-end/total"
-                Response.Headers["Content-Range"] = $"bytes {start}-{end}/{totalLength.Value}";
+                SetResponseHeader(Response.Headers, "Content-Range", $"bytes {start}-{end}/{totalLength.Value}");
                 
                 // Set Content-Length so clients (e.g. Kodi) can resume via Range requests. On client disconnect we abort the connection to avoid Kestrel's Content-Length mismatch.
                 Response.ContentLength = rangeLength;
@@ -1135,7 +1149,7 @@ public class JfresolveApiController : ControllerBase
                 
                 if (!string.IsNullOrEmpty(contentRangeValue))
                 {
-                    Response.Headers["Content-Range"] = contentRangeValue;
+                    SetResponseHeader(Response.Headers, "Content-Range", contentRangeValue);
                 }
                 
             // Set Content-Length for 206 so clients can resume. On client disconnect we abort the connection to avoid Content-Length mismatch.
@@ -1154,7 +1168,7 @@ public class JfresolveApiController : ControllerBase
         }
         
         // Copy Accept-Ranges header to indicate we support range requests
-        Response.Headers["Accept-Ranges"] = Constants.AcceptRangesBytes;
+        SetResponseHeader(Response.Headers, "Accept-Ranges", Constants.AcceptRangesBytes);
         
         // For 200 OK (when not implementing workaround), don't set Content-Length to avoid mismatch errors if connection resets
         // This allows graceful handling of connection resets without "Content-Length mismatch" errors
@@ -2077,7 +2091,7 @@ public class JfresolveApiController : ControllerBase
 
         // Check for Referer header from Jellyfin (additional security layer)
         // This helps verify the request is coming from a Jellyfin client
-        var referer = Request.Headers["Referer"].FirstOrDefault();
+        var referer = GetRequestHeader(Request, "Referer");
         if (!string.IsNullOrWhiteSpace(referer))
         {
             var serverUrl = config?.JellyfinServerUrl ?? "http://localhost:8096";
@@ -2089,7 +2103,7 @@ public class JfresolveApiController : ControllerBase
         }
 
         // Check for User-Agent header that indicates Jellyfin client
-        var userAgent = Request.Headers["User-Agent"].FirstOrDefault();
+        var userAgent = GetRequestHeader(Request, "User-Agent");
         if (!string.IsNullOrWhiteSpace(userAgent) && 
             (userAgent.Contains("Jellyfin", StringComparison.OrdinalIgnoreCase) ||
              userAgent.Contains("Emby", StringComparison.OrdinalIgnoreCase)))
@@ -2412,13 +2426,10 @@ public class JfresolveApiController : ControllerBase
             // Preserve Range header from original request if present
             // Note: We need to get this from the original request context
             // For now, we'll preserve it from the current HTTP context
-            if (Request.Headers.ContainsKey("Range"))
+            var rangeHeader = GetRequestHeader(Request, "Range");
+            if (!string.IsNullOrEmpty(rangeHeader))
             {
-                var rangeHeader = Request.Headers["Range"].ToString();
-                if (!string.IsNullOrEmpty(rangeHeader))
-                {
-                    redirectRequest.Headers.Add("Range", rangeHeader);
-                }
+                redirectRequest.Headers.Add("Range", rangeHeader);
             }
 
             // Follow the redirect (with cancellation token to stop immediately if client disconnects)
