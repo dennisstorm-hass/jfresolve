@@ -8,6 +8,8 @@ public static class Constants
     // Streaming buffer configuration
     public const int StreamBufferSize = 262144; // 256KB buffer for better throughput
     public const int StreamFlushInterval = 4; // Flush every 4 buffers (1MB chunks)
+    /// <summary>For the first N bytes after a seek (range request), flush every buffer to reduce audio stutter.</summary>
+    public const int StreamFlushEveryBufferUntilBytesAfterSeek = 2097152; // 2MB
     public const int LegacyStreamBufferSize = 81920; // 80KB (kept for reference)
     /// <summary>Max reconnects when upstream drops mid-stream (e.g. Real-Debrid ~10 min limit).</summary>
     public const int MaxStreamReconnectAttempts = 15;

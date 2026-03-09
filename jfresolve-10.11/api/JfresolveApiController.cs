@@ -1228,7 +1228,8 @@ public class JfresolveApiController : ControllerBase
                         await Response.Body.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                         totalBytesWritten += bytesRead;
                         bufferCount++;
-                        if (bufferCount == 1 || bufferCount % flushInterval == 0)
+                        bool inPostSeekWindow = rangeStart.HasValue && totalBytesWritten < Constants.StreamFlushEveryBufferUntilBytesAfterSeek;
+                        if (inPostSeekWindow || bufferCount == 1 || bufferCount % flushInterval == 0)
                             await Response.Body.FlushAsync(cancellationToken);
                     }
 
