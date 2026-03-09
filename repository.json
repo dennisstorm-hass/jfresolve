@@ -9,14 +9,6 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.48",
-        "changelog": "Fix: Audio stuttering when skipping ahead in TV shows or movies. After a seek (range request), the proxy now flushes every 256KB for the first 2MB so the client receives a steady stream and the audio pipeline can refill.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.48/jfresolve.zip",
-        "checksum": "7d5a273558e8036dc17a1a514ddb48cd",
-        "targetAbi": "10.11.0.0",
-        "timestamp": "2026-03-09T12:00:00Z"
-      },
-      {
         "version": "1.0.0.47",
         "changelog": "Fix: NullReferenceException in GetPlaybackMediaSources when user is null (e.g. HLS/transcode requests). Guard so userId is only appended to Path when user is non-null.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.47/jfresolve.zip",
