@@ -38,7 +38,7 @@ public class JfresolveApiController : ControllerBase
 {
     private readonly ILogger _logger = NullLogger.Instance;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly StreamQualitySelector _qualitySelector;
+    private readonly StreamQualitySelector _qualitySelector = new(NullLogger<StreamQualitySelector>.Instance);
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
     private readonly Services.UserPreferencesService _userPrefs;
     private readonly IAuthorizationContext _authContext;
@@ -64,13 +64,11 @@ public class JfresolveApiController : ControllerBase
 
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
-        StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
         _httpClientFactory = httpClientFactory;
-        _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
         _userPrefs = userPrefs;
         _authContext = authContext;

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.52",
+        "changelog": "Fix: remove StreamQualitySelector constructor DI from JfresolveApiController and use internal fallback selector, preventing plugin endpoint activation failures in Jellyfin 10.11.6.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.52/jfresolve.zip",
+        "checksum": "11660e5b0a223937c6031b366c8d2c45",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-09T12:00:00Z"
+      },
+      {
         "version": "1.0.0.51",
         "changelog": "Fix: avoid plugin DI failures in Jellyfin 10.11.6 by removing ILogger/ILoggerFactory constructor dependencies from controller and scheduled tasks; prevents playback crashes during /Plugins/Jfresolve/resolve endpoints.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.51/jfresolve.zip",
