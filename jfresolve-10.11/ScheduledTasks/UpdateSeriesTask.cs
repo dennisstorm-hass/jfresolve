@@ -11,6 +11,7 @@ using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Querying;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.ScheduledTasks;
 
@@ -20,18 +21,18 @@ namespace Jfresolve.ScheduledTasks;
 public sealed class UpdateSeriesTask : IScheduledTask
 {
     private readonly ILibraryManager _libraryManager;
-    private readonly ILogger<UpdateSeriesTask> _log;
+    private readonly ILogger _log;
     private readonly JfresolveManager _jfresolveManager;
     private readonly TmdbService _tmdbService;
 
     public UpdateSeriesTask(
         ILibraryManager libraryManager,
-        ILogger<UpdateSeriesTask> logger,
+        ILoggerFactory? loggerFactory,
         JfresolveManager jfresolveManager,
         TmdbService tmdbService)
     {
         _libraryManager = libraryManager;
-        _log = logger;
+        _log = loggerFactory?.CreateLogger(nameof(UpdateSeriesTask)) ?? NullLogger.Instance;
         _jfresolveManager = jfresolveManager;
         _tmdbService = tmdbService;
     }

@@ -13,6 +13,7 @@ using MediaBrowser.Controller.Providers;
 using MediaBrowser.Model.Entities;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.ScheduledTasks;
 
@@ -22,20 +23,20 @@ namespace Jfresolve.ScheduledTasks;
 public sealed class PopulateLibraryTask : IScheduledTask
 {
     private readonly ILibraryManager _libraryManager;
-    private readonly ILogger<PopulateLibraryTask> _log;
+    private readonly ILogger _log;
     private readonly JfresolveManager _jfresolveManager;
     private readonly TmdbService _tmdbService;
     private readonly DvdReleaseDatesService _dvdReleaseDatesService;
 
     public PopulateLibraryTask(
         ILibraryManager libraryManager,
-        ILogger<PopulateLibraryTask> logger,
+        ILoggerFactory? loggerFactory,
         JfresolveManager jfresolveManager,
         TmdbService tmdbService,
         DvdReleaseDatesService dvdReleaseDatesService)
     {
         _libraryManager = libraryManager;
-        _log = logger;
+        _log = loggerFactory?.CreateLogger(nameof(PopulateLibraryTask)) ?? NullLogger.Instance;
         _jfresolveManager = jfresolveManager;
         _tmdbService = tmdbService;
         _dvdReleaseDatesService = dvdReleaseDatesService;

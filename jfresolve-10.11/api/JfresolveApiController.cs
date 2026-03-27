@@ -15,6 +15,7 @@ using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.Api;
 
@@ -62,14 +63,14 @@ public class JfresolveApiController : ControllerBase
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
-        ILogger<JfresolveApiController> logger,
+        ILoggerFactory? loggerFactory,
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
-        _logger = logger;
+        _logger = loggerFactory?.CreateLogger<JfresolveApiController>() ?? NullLogger<JfresolveApiController>.Instance;
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");

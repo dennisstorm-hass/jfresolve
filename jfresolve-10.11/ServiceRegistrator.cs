@@ -42,9 +42,9 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<ItemDtoFilter>();
 
         // Register scheduled tasks
-        services.AddSingleton<PurgeJfresolveTask>();
-        services.AddSingleton<PopulateLibraryTask>();
-        services.AddSingleton<UpdateSeriesTask>();
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, PurgeJfresolveTask>();
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, PopulateLibraryTask>();
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, UpdateSeriesTask>();
 
         // Register HttpClientFactory with named clients for different use cases
         services.AddHttpClient();

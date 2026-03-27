@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using MediaBrowser.Controller.Library;
 using MediaBrowser.Model.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.ScheduledTasks;
 
@@ -15,17 +16,17 @@ namespace Jfresolve.ScheduledTasks;
 /// </summary>
 public sealed class PurgeJfresolveTask : IScheduledTask
 {
-    private readonly ILogger<PurgeJfresolveTask> _log;
+    private readonly ILogger _log;
     private readonly JfresolveManager _manager;
     private readonly ILibraryManager _library;
 
     public PurgeJfresolveTask(
         ILibraryManager libraryManager,
-        ILogger<PurgeJfresolveTask> log,
+        ILoggerFactory? loggerFactory,
         JfresolveManager manager
     )
     {
-        _log = log;
+        _log = loggerFactory?.CreateLogger(nameof(PurgeJfresolveTask)) ?? NullLogger.Instance;
         _library = libraryManager;
         _manager = manager;
     }
