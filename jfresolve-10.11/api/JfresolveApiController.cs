@@ -79,6 +79,76 @@ public class JfresolveApiController : ControllerBase
         return HttpContext?.RequestServices?.GetService<Services.UserPreferencesService>();
     }
 
+    private Configuration.PluginConfiguration? GetPluginConfiguration()
+    {
+        var cfg = JfresolvePlugin.Instance?.Configuration;
+        if (cfg != null)
+            return cfg;
+
+        // Fallback: load configuration from disk when the plugin instance hasn't been constructed yet.
+        // This avoids relying on BasePlugin initialization timing during Jellyfin startup.
+        var applicationPaths = HttpContext?.RequestServices?.GetService(typeof(MediaBrowser.Common.Configuration.IApplicationPaths)) as
+            MediaBrowser.Common.Configuration.IApplicationPaths;
+
+        if (applicationPaths == null)
+            return null;
+
+        var configDir = applicationPaths.PluginConfigurationsPath;
+        if (string.IsNullOrWhiteSpace(configDir))
+            return null;
+
+        return TryLoadPluginConfigurationFromDisk(configDir);
+    }
+
+    private Configuration.PluginConfiguration? TryLoadPluginConfigurationFromDisk(string configDir)
+    {
+        // Jellyfin plugins typically store BasePlugin configuration as config.json inside their plugin config directory.
+        // Try a couple of common filenames for resilience.
+        var candidates = new[]
+        {
+            Path.Combine(configDir, "config.json"),
+            Path.Combine(configDir, "Config.json"),
+            Path.Combine(configDir, "plugin.json"),
+            Path.Combine(configDir, "Plugin.json")
+        };
+
+        var filePath = candidates.FirstOrDefault(System.IO.File.Exists);
+        if (filePath == null)
+            return null;
+
+        try
+        {
+            var json = System.IO.File.ReadAllText(filePath);
+            var options = new System.Text.Json.JsonSerializerOptions
+            {
+                PropertyNameCaseInsensitive = true
+            };
+
+            // Be tolerant if BasePlugin wraps the config in an outer object.
+            using var doc = JsonDocument.Parse(json);
+            JsonElement element = doc.RootElement;
+
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                foreach (var propName in new[] { "configuration", "config", "value", "Value", "Configuration" })
+                {
+                    if (element.TryGetProperty(propName, out var nested))
+                    {
+                        element = nested;
+                        break;
+                    }
+                }
+            }
+
+            return JsonSerializer.Deserialize<Configuration.PluginConfiguration>(element.GetRawText(), options);
+        }
+        catch
+        {
+            // Best-effort only.
+            return null;
+        }
+    }
+
     private string GetRequestHeaderValue(string name)
     {
         var headers = Request?.Headers;
@@ -199,23 +269,11 @@ public class JfresolveApiController : ControllerBase
             Request.Path, GetRequestHeaderValue("Range")
         );
 
-        var config = JfresolvePlugin.Instance?.Configuration;
+        var config = GetPluginConfiguration();
         if (config == null)
         {
-            // Jellyfin can hit our resolve endpoint very early (before BasePlugin has fully loaded config).
-            // Don't fail with 400 (which breaks playback/probing); wait briefly and otherwise return 503.
-            _logger.LogWarning("Jfresolve: Plugin configuration is null - waiting briefly for config load");
-            for (var i = 0; i < 20 && config == null; i++)
-            {
-                await Task.Delay(100, HttpContext.RequestAborted).ConfigureAwait(false);
-                config = JfresolvePlugin.Instance?.Configuration;
-            }
-
-            if (config == null)
-            {
-                _logger.LogError("Jfresolve: Plugin configuration is still null after waiting");
-                return StatusCode(503, "Plugin configuration not ready");
-            }
+            _logger.LogError("Jfresolve: Plugin configuration is unavailable");
+            return StatusCode(503, "Plugin configuration not ready");
         }
 
         // Check if addon manifest URL is configured
@@ -1471,7 +1529,7 @@ public class JfresolveApiController : ControllerBase
             plugin = "Jfresolve",
             version = JfresolvePlugin.Instance?.Version?.ToString() ?? "Unknown",
             message = "API controller is working!",
-            manifestConfigured = !string.IsNullOrWhiteSpace(JfresolvePlugin.Instance?.Configuration?.AddonManifestUrl)
+                manifestConfigured = !string.IsNullOrWhiteSpace(GetPluginConfiguration()?.AddonManifestUrl)
         });
     }
 
@@ -1564,7 +1622,7 @@ public class JfresolveApiController : ControllerBase
         if (userId == null)
             return Unauthorized("Must be logged in to view user settings");
 
-        var config = JfresolvePlugin.Instance?.Configuration;
+        var config = GetPluginConfiguration();
         var userPrefsService = GetUserPreferencesService();
         var prefs = userPrefsService?.Get(userId.Value) ?? new Configuration.UserPlaybackPrefs();
         return Ok(new
@@ -1689,7 +1747,7 @@ public class JfresolveApiController : ControllerBase
         string preferredQuality,
         string type)
     {
-        var config = JfresolvePlugin.Instance?.Configuration;
+        var config = GetPluginConfiguration();
         if (config == null)
         {
             return requestedIndex ?? 0;

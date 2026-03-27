@@ -9,6 +9,38 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.63",
+        "changelog": "Fix: packaging/init reliability — stop shipping Jellyfin/Microsoft runtime assemblies inside the plugin zip (rely on host runtime like in 1.0.0.49), restoring plugin initialization and config page visibility after restart.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.63/jfresolve.zip",
+        "checksum": "12813834490eb6006f9df931942c967a",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
+        "version": "1.0.0.62",
+        "changelog": "Fix: retarget plugin to net8.0 (Jellyfin 10.11.6 runtime) to restore proper plugin initialization and configuration page visibility; also avoids ASP.NET Core 9 ABI incompatibilities.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.62/jfresolve.zip",
+        "checksum": "TO_BE_UPDATED_AFTER_BUILD",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
+        "version": "1.0.0.61",
+        "changelog": "Fix: restore resolve endpoint reliability without waiting for BasePlugin initialization by loading plugin config from disk when JfresolvePlugin.Instance is not available yet.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.61/jfresolve.zip",
+        "checksum": "c492891ff59f5459b2a7e166044fa897",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
+        "version": "1.0.0.60",
+        "changelog": "Fix: extend resolve endpoint config wait window (~15s) to avoid 503 during Jellyfin startup before plugin configuration is ready.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.60/jfresolve.zip",
+        "checksum": "04f899b403a80529598c587d7908899b",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.59",
         "changelog": "Fix: revert fragile DI registrations that could prevent Jellyfin plugin initialization after restart; keep stream resolve/proxy header + auth/config robustness changes.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.59/jfresolve.zip",

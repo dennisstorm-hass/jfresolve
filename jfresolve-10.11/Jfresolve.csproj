@@ -6,16 +6,16 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>Jfresolve</AssemblyName>
     <RootNamespace>Jfresolve</RootNamespace>
-    <Version>1.0.0.59</Version>
-    <AssemblyVersion>1.0.0.59</AssemblyVersion>
-    <FileVersion>1.0.0.59</FileVersion>
+    <Version>1.0.0.63</Version>
+    <AssemblyVersion>1.0.0.63</AssemblyVersion>
+    <FileVersion>1.0.0.63</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Jellyfin.Model" Version="10.11.6" />
-    <PackageReference Include="Jellyfin.Controller" Version="10.11.6" />
-    <PackageReference Include="Jellyfin.Common" Version="10.11.6" />
-    <PackageReference Include="Microsoft.AspNetCore.Connections.Abstractions" Version="9.0.0" />
+    <PackageReference Include="Jellyfin.Model" Version="10.11.6" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Controller" Version="10.11.6" ExcludeAssets="runtime" />
+    <PackageReference Include="Jellyfin.Common" Version="10.11.6" ExcludeAssets="runtime" />
+    <PackageReference Include="Microsoft.AspNetCore.Connections.Abstractions" Version="9.0.0" ExcludeAssets="runtime" />
   </ItemGroup>
 
   <ItemGroup>
