@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.56",
+        "changelog": "Fix: eliminate remaining Jellyfin 10.11.6 ABI crashes by replacing generic header dictionary access with reflection-based best-effort header reads/writes in resolve/proxy paths, preventing EntryPointNotFoundException in playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.56/jfresolve.zip",
+        "checksum": "825a6e309e5c8ef29f5086e89634b901",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.55",
         "changelog": "Fix: restore Jellyfin 10.11.6 playback by removing IHeaderDictionary indexer calls in stream resolve/proxy paths (uses header-safe accessors), preventing MissingMethodException in ResolveStream.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.55/jfresolve.zip",

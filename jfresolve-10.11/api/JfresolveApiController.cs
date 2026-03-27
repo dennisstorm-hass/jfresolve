@@ -81,9 +81,33 @@ public class JfresolveApiController : ControllerBase
 
     private string GetRequestHeaderValue(string name)
     {
-        if (Request?.Headers != null && Request.Headers.TryGetValue(name, out StringValues value))
+        var headers = Request?.Headers;
+        if (headers == null)
+            return string.Empty;
+
+        try
         {
-            return value.ToString();
+            // Use non-generic enumeration to avoid runtime ABI issues with generic IDictionary methods.
+            if (headers is System.Collections.IEnumerable enumerable)
+            {
+                foreach (var entry in enumerable)
+                {
+                    if (entry == null)
+                        continue;
+
+                    var entryType = entry.GetType();
+                    var keyObj = entryType.GetProperty("Key")?.GetValue(entry);
+                    if (keyObj is not string key || !key.Equals(name, StringComparison.OrdinalIgnoreCase))
+                        continue;
+
+                    var valueObj = entryType.GetProperty("Value")?.GetValue(entry);
+                    return valueObj?.ToString() ?? string.Empty;
+                }
+            }
+        }
+        catch
+        {
+            // Best-effort only; header reads are optional.
         }
 
         return string.Empty;
@@ -91,11 +115,33 @@ public class JfresolveApiController : ControllerBase
 
     private void SetResponseHeaderValue(string name, string value)
     {
-        if (Response?.Headers == null)
+        var headers = Response?.Headers;
+        if (headers == null)
             return;
 
-        Response.Headers.Remove(name);
-        Response.Headers.Add(name, new StringValues(value));
+        try
+        {
+            var headersType = headers.GetType();
+
+            var removeMethod = headersType.GetMethod("Remove", new[] { typeof(string) });
+            removeMethod?.Invoke(headers, new object[] { name });
+
+            // Prefer Append(string, string) if available.
+            var appendMethod = headersType.GetMethod("Append", new[] { typeof(string), typeof(string) });
+            if (appendMethod != null)
+            {
+                appendMethod.Invoke(headers, new object[] { name, value });
+                return;
+            }
+
+            // Fallback to Add(string, string) if available.
+            var addMethod = headersType.GetMethod("Add", new[] { typeof(string), typeof(string) });
+            addMethod?.Invoke(headers, new object[] { name, value });
+        }
+        catch
+        {
+            // Best-effort only; missing optional headers should not break playback.
+        }
     }
 
     /// <summary>
