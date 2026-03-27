@@ -36,7 +36,7 @@ internal enum StreamStopReason
 [Route("Plugins/506f18b85dad4cd3b9a0f7ed933e9939")] // Alternative route using plugin GUID for image requests
 public class JfresolveApiController : ControllerBase
 {
-    private readonly ILogger<JfresolveApiController> _logger;
+    private readonly ILogger _logger = NullLogger.Instance;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
@@ -63,14 +63,12 @@ public class JfresolveApiController : ControllerBase
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
-        ILoggerFactory? loggerFactory,
         IHttpClientFactory httpClientFactory,
         StreamQualitySelector qualitySelector,
         Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
-        _logger = loggerFactory?.CreateLogger<JfresolveApiController>() ?? NullLogger<JfresolveApiController>.Instance;
         _httpClientFactory = httpClientFactory;
         _qualitySelector = qualitySelector;
         _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");

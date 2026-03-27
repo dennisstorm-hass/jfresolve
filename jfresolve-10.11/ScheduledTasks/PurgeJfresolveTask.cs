@@ -22,11 +22,10 @@ public sealed class PurgeJfresolveTask : IScheduledTask
 
     public PurgeJfresolveTask(
         ILibraryManager libraryManager,
-        ILoggerFactory? loggerFactory,
         JfresolveManager manager
     )
     {
-        _log = loggerFactory?.CreateLogger(nameof(PurgeJfresolveTask)) ?? NullLogger.Instance;
+        _log = NullLogger.Instance;
         _library = libraryManager;
         _manager = manager;
     }

@@ -27,12 +27,11 @@ public sealed class UpdateSeriesTask : IScheduledTask
 
     public UpdateSeriesTask(
         ILibraryManager libraryManager,
-        ILoggerFactory? loggerFactory,
         JfresolveManager jfresolveManager,
         TmdbService tmdbService)
     {
         _libraryManager = libraryManager;
-        _log = loggerFactory?.CreateLogger(nameof(UpdateSeriesTask)) ?? NullLogger.Instance;
+        _log = NullLogger.Instance;
         _jfresolveManager = jfresolveManager;
         _tmdbService = tmdbService;
     }

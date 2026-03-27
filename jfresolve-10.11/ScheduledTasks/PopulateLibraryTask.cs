@@ -30,13 +30,12 @@ public sealed class PopulateLibraryTask : IScheduledTask
 
     public PopulateLibraryTask(
         ILibraryManager libraryManager,
-        ILoggerFactory? loggerFactory,
         JfresolveManager jfresolveManager,
         TmdbService tmdbService,
         DvdReleaseDatesService dvdReleaseDatesService)
     {
         _libraryManager = libraryManager;
-        _log = loggerFactory?.CreateLogger(nameof(PopulateLibraryTask)) ?? NullLogger.Instance;
+        _log = NullLogger.Instance;
         _jfresolveManager = jfresolveManager;
         _tmdbService = tmdbService;
         _dvdReleaseDatesService = dvdReleaseDatesService;
