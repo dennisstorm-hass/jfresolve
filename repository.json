@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.59",
+        "changelog": "Fix: revert fragile DI registrations that could prevent Jellyfin plugin initialization after restart; keep stream resolve/proxy header + auth/config robustness changes.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.59/jfresolve.zip",
+        "checksum": "441f2c2911f3e255d1ebc173076c01f9",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.58",
         "changelog": "Fix: avoid 400 Bad Request when Jellyfin calls resolve endpoint before plugin config is loaded; now waits briefly and returns 503 if not ready.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.58/jfresolve.zip",

@@ -33,9 +33,6 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<Services.DvdReleaseDatesService>();
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
-        services.AddSingleton<IRemoteMetadataProvider<MediaBrowser.Controller.Entities.TV.Series, MediaBrowser.Controller.Providers.SeriesInfo>>(sp =>
-            sp.GetRequiredService<JfresolveSeriesProvider>());
-        services.AddSingleton<IHasOrder>(sp => sp.GetRequiredService<JfresolveSeriesProvider>());
         services.AddSingleton<Services.StreamQualitySelector>();
         services.AddSingleton<Services.UserPreferencesService>();
         services.AddSingleton<SearchActionFilter>();
@@ -49,9 +46,11 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<PurgeJfresolveTask>();
         services.AddSingleton<PopulateLibraryTask>();
         services.AddSingleton<UpdateSeriesTask>();
-        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask>(sp => sp.GetRequiredService<PurgeJfresolveTask>());
-        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask>(sp => sp.GetRequiredService<PopulateLibraryTask>());
-        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask>(sp => sp.GetRequiredService<UpdateSeriesTask>());
+
+        // Keep Jellyfin's discovery path stable by registering scheduled tasks using the original interface mapping.
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, PurgeJfresolveTask>();
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, PopulateLibraryTask>();
+        services.AddSingleton<MediaBrowser.Model.Tasks.IScheduledTask, UpdateSeriesTask>();
 
         // Register HttpClientFactory with named clients for different use cases
         services.AddHttpClient();
