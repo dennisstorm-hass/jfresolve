@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.55",
+        "changelog": "Fix: restore Jellyfin 10.11.6 playback by removing IHeaderDictionary indexer calls in stream resolve/proxy paths (uses header-safe accessors), preventing MissingMethodException in ResolveStream.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.55/jfresolve.zip",
+        "checksum": "fc0f768345a5d2289ca1992854650259",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.54",
         "changelog": "Fix: harden DI activation for Jellyfin 10.11.6 by removing fragile controller constructor dependencies, registering scheduled tasks as concrete + IScheduledTask, and adding explicit provider interface registrations to prevent service resolution failures.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.54/jfresolve.zip",
