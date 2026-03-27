@@ -4,6 +4,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using Jfresolve.Configuration;
+using Jfresolve.Services;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.Entities.TV;
@@ -24,17 +25,20 @@ public sealed class PopulateLibraryTask : IScheduledTask
     private readonly ILogger<PopulateLibraryTask> _log;
     private readonly JfresolveManager _jfresolveManager;
     private readonly TmdbService _tmdbService;
+    private readonly DvdReleaseDatesService _dvdReleaseDatesService;
 
     public PopulateLibraryTask(
         ILibraryManager libraryManager,
         ILogger<PopulateLibraryTask> logger,
         JfresolveManager jfresolveManager,
-        TmdbService tmdbService)
+        TmdbService tmdbService,
+        DvdReleaseDatesService dvdReleaseDatesService)
     {
         _libraryManager = libraryManager;
         _log = logger;
         _jfresolveManager = jfresolveManager;
         _tmdbService = tmdbService;
+        _dvdReleaseDatesService = dvdReleaseDatesService;
     }
 
     public string Name => "Populate Jfresolve Library";
@@ -100,23 +104,43 @@ public sealed class PopulateLibraryTask : IScheduledTask
             var allMovies = new List<TmdbMovie>();
             var allTvShows = new List<TmdbTvShow>();
 
+            if (config.UseDvdReleaseSourceForMovies)
+            {
+                _log.LogInformation("Jfresolve: Fetching movies from dvdsreleasedates.com digital releases");
+                var dvdMovies = await _dvdReleaseDatesService.GetReleasedMoviesAsTmdbAsync(
+                    config.TmdbApiKey,
+                    config.DvdReleaseMonthsBack,
+                    config.IncludeAdult,
+                    config.DvdReleaseSourceTimeoutSeconds,
+                    cancellationToken);
+                allMovies.AddRange(dvdMovies);
+                _log.LogInformation("Jfresolve: Added {MovieCount} released movies from DVD source", dvdMovies.Count);
+            }
+
             // Fetch from Trending source if enabled
             if (config.UseTrendingSource)
             {
                 _log.LogInformation("Jfresolve: Fetching trending content from TMDB...");
-                var trendingMovies = await _tmdbService.GetTrendingMoviesAsync(
-                    config.TmdbApiKey,
-                    "week",
-                    config.IncludeAdult);
                 var trendingTvShows = await _tmdbService.GetTrendingTvShowsAsync(
                     config.TmdbApiKey,
                     "week",
                     config.IncludeAdult);
 
-                allMovies.AddRange(trendingMovies);
                 allTvShows.AddRange(trendingTvShows);
-                _log.LogInformation("Jfresolve: Added {MovieCount} trending movies and {TvCount} trending TV shows",
-                    trendingMovies.Count, trendingTvShows.Count);
+                if (!config.UseDvdReleaseSourceForMovies)
+                {
+                    var trendingMovies = await _tmdbService.GetTrendingMoviesAsync(
+                        config.TmdbApiKey,
+                        "week",
+                        config.IncludeAdult);
+                    allMovies.AddRange(trendingMovies);
+                    _log.LogInformation("Jfresolve: Added {MovieCount} trending movies and {TvCount} trending TV shows",
+                        trendingMovies.Count, trendingTvShows.Count);
+                }
+                else
+                {
+                    _log.LogInformation("Jfresolve: Added {TvCount} trending TV shows", trendingTvShows.Count);
+                }
             }
 
             progress.Report(25);
@@ -125,17 +149,24 @@ public sealed class PopulateLibraryTask : IScheduledTask
             if (config.UsePopularSource)
             {
                 _log.LogInformation("Jfresolve: Fetching popular content from TMDB...");
-                var popularMovies = await _tmdbService.GetPopularMoviesAsync(
-                    config.TmdbApiKey,
-                    config.IncludeAdult);
                 var popularTvShows = await _tmdbService.GetPopularTvShowsAsync(
                     config.TmdbApiKey,
                     config.IncludeAdult);
 
-                allMovies.AddRange(popularMovies);
                 allTvShows.AddRange(popularTvShows);
-                _log.LogInformation("Jfresolve: Added {MovieCount} popular movies and {TvCount} popular TV shows",
-                    popularMovies.Count, popularTvShows.Count);
+                if (!config.UseDvdReleaseSourceForMovies)
+                {
+                    var popularMovies = await _tmdbService.GetPopularMoviesAsync(
+                        config.TmdbApiKey,
+                        config.IncludeAdult);
+                    allMovies.AddRange(popularMovies);
+                    _log.LogInformation("Jfresolve: Added {MovieCount} popular movies and {TvCount} popular TV shows",
+                        popularMovies.Count, popularTvShows.Count);
+                }
+                else
+                {
+                    _log.LogInformation("Jfresolve: Added {TvCount} popular TV shows", popularTvShows.Count);
+                }
             }
 
             progress.Report(40);
@@ -144,34 +175,44 @@ public sealed class PopulateLibraryTask : IScheduledTask
             if (config.UseTopRatedSource)
             {
                 _log.LogInformation("Jfresolve: Fetching top rated content from TMDB...");
-                var topRatedMovies = await _tmdbService.GetTopRatedMoviesAsync(
-                    config.TmdbApiKey,
-                    config.IncludeAdult);
                 var topRatedTvShows = await _tmdbService.GetTopRatedTvShowsAsync(
                     config.TmdbApiKey,
                     config.IncludeAdult);
 
-                allMovies.AddRange(topRatedMovies);
                 allTvShows.AddRange(topRatedTvShows);
-                _log.LogInformation("Jfresolve: Added {MovieCount} top rated movies and {TvCount} top rated TV shows",
-                    topRatedMovies.Count, topRatedTvShows.Count);
+                if (!config.UseDvdReleaseSourceForMovies)
+                {
+                    var topRatedMovies = await _tmdbService.GetTopRatedMoviesAsync(
+                        config.TmdbApiKey,
+                        config.IncludeAdult);
+                    allMovies.AddRange(topRatedMovies);
+                    _log.LogInformation("Jfresolve: Added {MovieCount} top rated movies and {TvCount} top rated TV shows",
+                        topRatedMovies.Count, topRatedTvShows.Count);
+                }
+                else
+                {
+                    _log.LogInformation("Jfresolve: Added {TvCount} top rated TV shows", topRatedTvShows.Count);
+                }
             }
 
             // If no sources are enabled, default to Trending for backward compatibility
             if (!config.UseTrendingSource && !config.UsePopularSource && !config.UseTopRatedSource)
             {
                 _log.LogWarning("Jfresolve: No content sources enabled, defaulting to Trending");
-                var defaultMovies = await _tmdbService.GetTrendingMoviesAsync(
-                    config.TmdbApiKey,
-                    "week",
-                    config.IncludeAdult);
                 var defaultTvShows = await _tmdbService.GetTrendingTvShowsAsync(
                     config.TmdbApiKey,
                     "week",
                     config.IncludeAdult);
 
-                allMovies.AddRange(defaultMovies);
                 allTvShows.AddRange(defaultTvShows);
+                if (!config.UseDvdReleaseSourceForMovies)
+                {
+                    var defaultMovies = await _tmdbService.GetTrendingMoviesAsync(
+                        config.TmdbApiKey,
+                        "week",
+                        config.IncludeAdult);
+                    allMovies.AddRange(defaultMovies);
+                }
             }
 
             // Remove duplicates (same TMDB ID might appear in multiple sources)
@@ -196,11 +237,14 @@ public sealed class PopulateLibraryTask : IScheduledTask
                 var beforeFilterMovies = moviesToProcess.Count;
                 var beforeFilterTv = tvShowsToProcess.Count;
 
-                moviesToProcess = moviesToProcess.Where(m =>
+                if (!config.UseDvdReleaseSourceForMovies)
                 {
-                    var releaseDate = m.GetReleaseDateTime();
-                    return releaseDate.HasValue && releaseDate.Value <= cutoffDate;
-                }).ToList();
+                    moviesToProcess = moviesToProcess.Where(m =>
+                    {
+                        var releaseDate = m.GetReleaseDateTime();
+                        return releaseDate.HasValue && releaseDate.Value <= cutoffDate;
+                    }).ToList();
+                }
 
                 tvShowsToProcess = tvShowsToProcess.Where(tv =>
                 {
@@ -235,7 +279,7 @@ public sealed class PopulateLibraryTask : IScheduledTask
             var tvShowsToAdd = tvShowsToProcess.Take(config.PopulationResultLimit / 2).ToList();
 
             _log.LogInformation(
-                "Jfresolve: Retrieved {MovieCount} movies and {TvCount} TV shows from TMDB",
+                "Jfresolve: Retrieved {MovieCount} movies and {TvCount} TV shows for auto-population",
                 moviesToAdd.Count,
                 tvShowsToAdd.Count);
 

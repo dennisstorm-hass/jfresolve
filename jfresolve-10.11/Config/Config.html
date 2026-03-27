@@ -713,6 +713,58 @@
                                             <span>Top Rated</span></label
                                         >
                                     </div>
+                                    <div class="checkboxContainer field-group">
+                                        <label
+                                            class="emby-checkbox-label"
+                                            for="UseDvdReleaseSourceForMovies"
+                                        >
+                                            <input
+                                                type="checkbox"
+                                                is="emby-checkbox"
+                                                id="UseDvdReleaseSourceForMovies"
+                                            />
+                                            <span>Use DVD Digital Releases for Movies</span>
+                                        </label>
+                                        <div class="field-description">
+                                            Replace TMDB movie auto-import with dvdsreleasedates.com entries that have already released.
+                                        </div>
+                                    </div>
+                                    <div
+                                        style="
+                                            display: grid;
+                                            grid-template-columns: 1fr 1fr;
+                                            gap: 20px;
+                                        "
+                                    >
+                                        <div class="inputContainer">
+                                            <label
+                                                class="inputLabel"
+                                                for="DvdReleaseMonthsBack"
+                                                >DVD Months Back</label
+                                            >
+                                            <input
+                                                type="number"
+                                                id="DvdReleaseMonthsBack"
+                                                is="emby-input"
+                                                min="0"
+                                                max="3"
+                                            />
+                                        </div>
+                                        <div class="inputContainer">
+                                            <label
+                                                class="inputLabel"
+                                                for="DvdReleaseSourceTimeoutSeconds"
+                                                >DVD Source Timeout (s)</label
+                                            >
+                                            <input
+                                                type="number"
+                                                id="DvdReleaseSourceTimeoutSeconds"
+                                                is="emby-input"
+                                                min="5"
+                                                max="120"
+                                            />
+                                        </div>
+                                    </div>
                                     <div class="inputContainer">
                                         <label
                                             class="inputLabel"
@@ -1078,6 +1130,15 @@
                                 "UseTopRatedSource",
                             ).checked = config.UseTopRatedSource || false;
                             document.getElementById(
+                                "UseDvdReleaseSourceForMovies",
+                            ).checked = config.UseDvdReleaseSourceForMovies || false;
+                            document.getElementById(
+                                "DvdReleaseMonthsBack",
+                            ).value = config.DvdReleaseMonthsBack ?? 1;
+                            document.getElementById(
+                                "DvdReleaseSourceTimeoutSeconds",
+                            ).value = config.DvdReleaseSourceTimeoutSeconds ?? 20;
+                            document.getElementById(
                                 "PopulationResultLimit",
                             ).value = config.PopulationResultLimit || 20;
                             document.getElementById("ExclusionList").value =
@@ -1245,6 +1306,22 @@
                                 document.getElementById(
                                     "UseTopRatedSource",
                                 ).checked;
+                            config.UseDvdReleaseSourceForMovies =
+                                document.getElementById(
+                                    "UseDvdReleaseSourceForMovies",
+                                ).checked;
+                            config.DvdReleaseMonthsBack =
+                                parseInt(
+                                    document.getElementById(
+                                        "DvdReleaseMonthsBack",
+                                    ).value,
+                                ) || 1;
+                            config.DvdReleaseSourceTimeoutSeconds =
+                                parseInt(
+                                    document.getElementById(
+                                        "DvdReleaseSourceTimeoutSeconds",
+                                    ).value,
+                                ) || 20;
                             config.PopulationResultLimit = parseInt(
                                 document.getElementById("PopulationResultLimit")
                                     .value,

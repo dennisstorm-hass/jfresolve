@@ -30,6 +30,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
 
         // Register core services
         services.AddSingleton<TmdbService>();
+        services.AddSingleton<Services.DvdReleaseDatesService>();
         services.AddSingleton<JfresolveManager>();
         services.AddSingleton<JfresolveSeriesProvider>();
         services.AddSingleton<Services.StreamQualitySelector>();

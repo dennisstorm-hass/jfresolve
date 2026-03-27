@@ -632,6 +632,87 @@ public class TmdbService
     }
 
     /// <summary>
+    /// Find a movie via IMDb ID using TMDB /find endpoint.
+    /// </summary>
+    public async Task<TmdbMovie?> FindMovieByImdbIdAsync(string imdbId, string apiKey, bool includeAdult = false, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(apiKey) || string.IsNullOrWhiteSpace(imdbId))
+        {
+            return null;
+        }
+
+        try
+        {
+            var url = $"{BaseUrl}/find/{imdbId}?api_key={apiKey}&external_source=imdb_id";
+            var client = _httpClientFactory.CreateClient();
+            var response = await client.GetAsync(url, cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                _log.LogWarning("TMDB find-by-imdb failed with status {StatusCode} for {ImdbId}", response.StatusCode, imdbId);
+                return null;
+            }
+
+            var json = await response.Content.ReadAsStringAsync(cancellationToken).ConfigureAwait(false);
+            var result = JsonSerializer.Deserialize<TmdbFindResult>(json);
+            var movie = result?.MovieResults?.FirstOrDefault();
+            if (movie == null)
+            {
+                return null;
+            }
+
+            if (!includeAdult && movie.Adult)
+            {
+                return null;
+            }
+
+            movie.ImdbId = imdbId;
+            return movie;
+        }
+        catch (Exception ex)
+        {
+            _log.LogWarning(ex, "Failed TMDB find-by-imdb for {ImdbId}", imdbId);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Finds the best TMDB movie candidate by title and optional release year.
+    /// </summary>
+    public async Task<TmdbMovie?> FindBestMovieByTitleYearAsync(string title, int? year, string apiKey, bool includeAdult = false, CancellationToken cancellationToken = default)
+    {
+        if (string.IsNullOrWhiteSpace(title))
+        {
+            return null;
+        }
+
+        var results = await SearchMoviesAsync(title, apiKey, includeAdult).ConfigureAwait(false);
+        if (results.Count == 0)
+        {
+            return null;
+        }
+
+        TmdbMovie? chosen = null;
+        if (year.HasValue)
+        {
+            chosen = results.FirstOrDefault(m => m.GetYear() == year.Value);
+        }
+
+        chosen ??= results.FirstOrDefault();
+        if (chosen == null)
+        {
+            return null;
+        }
+
+        if (string.IsNullOrWhiteSpace(chosen.ImdbId))
+        {
+            var ids = await GetExternalIdsAsync(chosen.Id, "movie", apiKey).ConfigureAwait(false);
+            chosen.ImdbId = ids?.ImdbId;
+        }
+
+        return chosen;
+    }
+
+    /// <summary>
     /// Executes an HTTP request with retry logic for transient failures
     /// </summary>
     private async Task<HttpResponseMessage?> ExecuteWithRetryAsync(
@@ -697,6 +778,12 @@ public class TmdbSearchResult<T>
 
     [JsonPropertyName("total_results")]
     public int TotalResults { get; set; }
+}
+
+public class TmdbFindResult
+{
+    [JsonPropertyName("movie_results")]
+    public List<TmdbMovie> MovieResults { get; set; } = new();
 }
 
 public class TmdbMovie

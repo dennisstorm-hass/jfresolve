@@ -144,6 +144,21 @@ public class PluginConfiguration : BasePluginConfiguration
     public bool UseTopRatedSource { get; set; } = false;
 
     /// <summary>
+    /// When enabled, movie auto-population source is dvdsreleasedates.com digital releases (TV source remains TMDB).
+    /// </summary>
+    public bool UseDvdReleaseSourceForMovies { get; set; } = false;
+
+    /// <summary>
+    /// Number of previous months to include from digital releases pages. 0 means current month only.
+    /// </summary>
+    public int DvdReleaseMonthsBack { get; set; } = 1;
+
+    /// <summary>
+    /// Timeout for dvdsreleasedates.com HTTP requests.
+    /// </summary>
+    public int DvdReleaseSourceTimeoutSeconds { get; set; } = 20;
+
+    /// <summary>
     /// Maximum number of items to add per population run
     /// </summary>
     public int PopulationResultLimit { get; set; } = 20;
