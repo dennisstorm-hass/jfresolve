@@ -9,10 +9,18 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.53",
+        "changelog": "Fix: remove CircuitBreakerFactory constructor DI from JfresolveApiController and harden circuit breaker creation with no-logger fallback to prevent endpoint activation failures in Jellyfin 10.11.6.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.53/jfresolve.zip",
+        "checksum": "0839cc6c2157ffcf5609d464c819e3bd",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-09T12:00:00Z"
+      },
+      {
         "version": "1.0.0.52",
         "changelog": "Fix: remove StreamQualitySelector constructor DI from JfresolveApiController and use internal fallback selector, preventing plugin endpoint activation failures in Jellyfin 10.11.6.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.52/jfresolve.zip",
-        "checksum": "11660e5b0a223937c6031b366c8d2c45",
+        "checksum": "edb03ce807afcdd00122e2c39ed52da3",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-03-09T12:00:00Z"
       },

@@ -64,12 +64,16 @@ public class JfresolveApiController : ControllerBase
 
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
-        Services.CircuitBreakerFactory circuitBreakerFactory,
         Services.UserPreferencesService userPrefs,
         IAuthorizationContext authContext)
     {
         _httpClientFactory = httpClientFactory;
-        _addonCircuitBreaker = circuitBreakerFactory.GetOrCreate("StremioAddon");
+        _addonCircuitBreaker = new Services.CircuitBreaker(
+            "StremioAddon",
+            NullLogger<Services.CircuitBreaker>.Instance,
+            Constants.CircuitBreakerFailureThreshold,
+            Constants.CircuitBreakerOpenDuration,
+            Constants.CircuitBreakerHalfOpenTimeout);
         _userPrefs = userPrefs;
         _authContext = authContext;
     }

@@ -3,6 +3,7 @@ using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Logging.Abstractions;
 
 namespace Jfresolve.Services;
 
@@ -12,7 +13,12 @@ namespace Jfresolve.Services;
 public class CircuitBreakerFactory
 {
     private readonly ConcurrentDictionary<string, CircuitBreaker> _breakers = new();
-    private readonly ILoggerFactory _loggerFactory;
+    private readonly ILoggerFactory? _loggerFactory;
+
+    // Some Jellyfin builds don't provide ILoggerFactory in plugin DI. Keep a safe parameterless ctor.
+    public CircuitBreakerFactory()
+    {
+    }
 
     public CircuitBreakerFactory(ILoggerFactory loggerFactory)
     {
@@ -23,7 +29,7 @@ public class CircuitBreakerFactory
     {
         return _breakers.GetOrAdd(name, n =>
         {
-            var logger = _loggerFactory.CreateLogger<CircuitBreaker>();
+            var logger = _loggerFactory?.CreateLogger<CircuitBreaker>() ?? NullLogger<CircuitBreaker>.Instance;
             return new CircuitBreaker(
                 n,
                 logger,
