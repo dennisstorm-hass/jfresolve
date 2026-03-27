@@ -2,6 +2,7 @@ using System;
 using System.Collections.Concurrent;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -20,6 +21,7 @@ public class CircuitBreakerFactory
     {
     }
 
+    [ActivatorUtilitiesConstructor]
     public CircuitBreakerFactory(ILoggerFactory loggerFactory)
     {
         _loggerFactory = loggerFactory;

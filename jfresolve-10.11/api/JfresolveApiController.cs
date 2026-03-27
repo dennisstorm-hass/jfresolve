@@ -14,6 +14,7 @@ using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 
@@ -40,8 +41,6 @@ public class JfresolveApiController : ControllerBase
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly StreamQualitySelector _qualitySelector = new(NullLogger<StreamQualitySelector>.Instance);
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
-    private readonly Services.UserPreferencesService _userPrefs;
-    private readonly IAuthorizationContext _authContext;
 
     // Failover cache: tracks recent playback attempts with time windows
     private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
@@ -63,9 +62,7 @@ public class JfresolveApiController : ControllerBase
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
 
     public JfresolveApiController(
-        IHttpClientFactory httpClientFactory,
-        Services.UserPreferencesService userPrefs,
-        IAuthorizationContext authContext)
+        IHttpClientFactory httpClientFactory)
     {
         _httpClientFactory = httpClientFactory;
         _addonCircuitBreaker = new Services.CircuitBreaker(
@@ -74,8 +71,11 @@ public class JfresolveApiController : ControllerBase
             Constants.CircuitBreakerFailureThreshold,
             Constants.CircuitBreakerOpenDuration,
             Constants.CircuitBreakerHalfOpenTimeout);
-        _userPrefs = userPrefs;
-        _authContext = authContext;
+    }
+
+    private Services.UserPreferencesService? GetUserPreferencesService()
+    {
+        return HttpContext?.RequestServices?.GetService<Services.UserPreferencesService>();
     }
 
     /// <summary>
@@ -156,8 +156,12 @@ public class JfresolveApiController : ControllerBase
         var preferHdrOverDolbyVision = config.PreferHdrOverDolbyVision;
         if (userId.HasValue)
         {
-            var userPrefs = _userPrefs.Get(userId.Value);
-            preferHdrOverDolbyVision = userPrefs.PreferHdrOverDolbyVision ?? config.PreferHdrOverDolbyVision;
+            var userPrefsService = GetUserPreferencesService();
+            if (userPrefsService != null)
+            {
+                var userPrefs = userPrefsService.Get(userId.Value);
+                preferHdrOverDolbyVision = userPrefs.PreferHdrOverDolbyVision ?? config.PreferHdrOverDolbyVision;
+            }
         }
 
         try
@@ -1488,7 +1492,8 @@ public class JfresolveApiController : ControllerBase
             return Unauthorized("Must be logged in to view user settings");
 
         var config = JfresolvePlugin.Instance?.Configuration;
-        var prefs = _userPrefs.Get(userId.Value);
+        var userPrefsService = GetUserPreferencesService();
+        var prefs = userPrefsService?.Get(userId.Value) ?? new Configuration.UserPlaybackPrefs();
         return Ok(new
         {
             preferHdrOverDolbyVision = prefs.PreferHdrOverDolbyVision ?? config?.PreferHdrOverDolbyVision ?? true
@@ -1506,31 +1511,43 @@ public class JfresolveApiController : ControllerBase
         if (userId == null)
             return Unauthorized("Must be logged in to save user settings");
 
-        var prefs = _userPrefs.Get(userId.Value);
+        var userPrefsService = GetUserPreferencesService();
+        if (userPrefsService == null)
+            return StatusCode(503, "User preferences service is unavailable");
+
+        var prefs = userPrefsService.Get(userId.Value);
         if (dto.PreferHdrOverDolbyVision.HasValue)
             prefs.PreferHdrOverDolbyVision = dto.PreferHdrOverDolbyVision.Value;
-        _userPrefs.Set(userId.Value, prefs);
+        userPrefsService.Set(userId.Value, prefs);
         return Ok(new { saved = true });
     }
 
     private async Task<Guid?> TryGetCurrentUserIdAsync()
     {
+        var httpContext = HttpContext;
+        if (httpContext == null)
+            return null;
+
         try
         {
-            var authInfo = await _authContext.GetAuthorizationInfo(HttpContext).ConfigureAwait(false);
-            if (authInfo != null && authInfo.IsAuthenticated)
+            var authContext = httpContext.RequestServices.GetService<IAuthorizationContext>();
+            if (authContext != null)
             {
-                if (authInfo.UserId != Guid.Empty)
-                    return authInfo.UserId;
-                if (authInfo.User != null)
-                    return authInfo.User.Id;
+                var authInfo = await authContext.GetAuthorizationInfo(httpContext).ConfigureAwait(false);
+                if (authInfo != null && authInfo.IsAuthenticated)
+                {
+                    if (authInfo.UserId != Guid.Empty)
+                        return authInfo.UserId;
+                    if (authInfo.User != null)
+                        return authInfo.User.Id;
+                }
             }
         }
         catch
         {
             // Fall through to Claims
         }
-        var claim = HttpContext.User?.Claims?.FirstOrDefault(c =>
+        var claim = httpContext.User?.Claims?.FirstOrDefault(c =>
             c.Type is "sub" or "UserId" or "Jellyfin-UserId");
         if (claim != null && Guid.TryParse(claim.Value, out var guid))
             return guid;

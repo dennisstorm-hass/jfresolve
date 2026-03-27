@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.54",
+        "changelog": "Fix: harden DI activation for Jellyfin 10.11.6 by removing fragile controller constructor dependencies, registering scheduled tasks as concrete + IScheduledTask, and adding explicit provider interface registrations to prevent service resolution failures.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.54/jfresolve.zip",
+        "checksum": "4056a70d6580d5494e8a1631e6ed6d0c",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.53",
         "changelog": "Fix: remove CircuitBreakerFactory constructor DI from JfresolveApiController and harden circuit breaker creation with no-logger fallback to prevent endpoint activation failures in Jellyfin 10.11.6.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.53/jfresolve.zip",
