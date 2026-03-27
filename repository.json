@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.58",
+        "changelog": "Fix: avoid 400 Bad Request when Jellyfin calls resolve endpoint before plugin config is loaded; now waits briefly and returns 503 if not ready.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.58/jfresolve.zip",
+        "checksum": "b95562c52f34424f2c575473a2c0b2b2",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-03-27T12:00:00Z"
+      },
+      {
         "version": "1.0.0.57",
         "changelog": "Fix: disable resolve endpoint authorization enforcement so Jellyfin FFmpeg/ffprobe requests without session headers no longer receive 401 Unauthorized.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.57/jfresolve.zip",

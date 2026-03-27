@@ -202,8 +202,20 @@ public class JfresolveApiController : ControllerBase
         var config = JfresolvePlugin.Instance?.Configuration;
         if (config == null)
         {
-            _logger.LogError("Jfresolve: Plugin configuration is null");
-            return BadRequest("Plugin not initialized");
+            // Jellyfin can hit our resolve endpoint very early (before BasePlugin has fully loaded config).
+            // Don't fail with 400 (which breaks playback/probing); wait briefly and otherwise return 503.
+            _logger.LogWarning("Jfresolve: Plugin configuration is null - waiting briefly for config load");
+            for (var i = 0; i < 20 && config == null; i++)
+            {
+                await Task.Delay(100, HttpContext.RequestAborted).ConfigureAwait(false);
+                config = JfresolvePlugin.Instance?.Configuration;
+            }
+
+            if (config == null)
+            {
+                _logger.LogError("Jfresolve: Plugin configuration is still null after waiting");
+                return StatusCode(503, "Plugin configuration not ready");
+            }
         }
 
         // Check if addon manifest URL is configured
