@@ -1064,8 +1064,13 @@ public class JfresolveApiController : ControllerBase
             string? finalUrl = null;
             var now = DateTime.UtcNow;
             CleanupResolvedUrlCacheIfNeeded();
-            
-            if (_resolvedUrlCache.TryGetValue(redirectUrl, out var cachedResolved) && cachedResolved.Expiry > now)
+
+            // On seek (non-zero Range), bypass the cached CDN URL and re-follow redirects with Range.
+            // TorBox/debrid CDNs may ignore Range on cached permalinks or return 206 with data from byte 0.
+            var isSeekRequest = rangeStart.HasValue && rangeStart.Value > 0;
+            if (!isSeekRequest &&
+                _resolvedUrlCache.TryGetValue(redirectUrl, out var cachedResolved) &&
+                cachedResolved.Expiry > now)
             {
                 finalUrl = cachedResolved.FinalUrl;
                 _logger.LogDebug("Jfresolve: Using cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
@@ -1143,50 +1148,136 @@ public class JfresolveApiController : ControllerBase
             }
             
             // Use the final response (after following redirects or from cache)
-            using var finalStreamResponse = streamResponse;
-            
-            // Check response status and handle errors appropriately
-            if (!finalStreamResponse.IsSuccessStatusCode)
-            {
-                initialResponse?.Dispose();
-                return HandleStreamError(finalStreamResponse, redirectUrl, type, id);
-            }
-            
-            // Dispose initialResponse if it was created (not used when cache hit)
-            initialResponse?.Dispose();
+            HttpResponseMessage? activeStreamResponse = streamResponse;
 
-            // Copy response headers
-            CopyStreamResponseHeaders(finalStreamResponse, rangeHeader, rangeStart);
-
-            // Build delegate to reconnect from byte offset when upstream drops mid-stream.
-            // Kodi/JellyCon (https://github.com/jellyfin/jellycon): JellyCon passes the play URL to Kodi via
-            // list_item.setPath(playurl); Kodi then opens that URL and reads the stream. Playback can drop
-            // every ~10 min on Kodi (upstream limit or Kodi closing the connection). Transparent reconnect
-            // keeps the stream alive without the client seeing an error.
-            string? urlForReconnect = finalUrl ?? redirectUrl;
-            Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null;
-            if (!string.IsNullOrEmpty(urlForReconnect))
+            try
             {
-                getStreamFromOffset = async (offset) =>
+                if (activeStreamResponse == null || !activeStreamResponse.IsSuccessStatusCode)
                 {
-                    var req = new HttpRequestMessage(HttpMethod.Get, urlForReconnect);
-                    req.Headers.Add("Range", $"bytes={offset}-");
-                    var resp = await streamHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                    if (resp == null || !resp.IsSuccessStatusCode)
-                    {
-                        resp?.Dispose();
-                        return (null, null);
-                    }
-                    var stream = await resp.Content.ReadAsStreamAsync();
-                    return (stream, resp);
-                };
-            }
+                    initialResponse?.Dispose();
+                    return activeStreamResponse == null
+                        ? StatusCode(502, "Failed to connect to stream")
+                        : HandleStreamError(activeStreamResponse, redirectUrl, type, id);
+                }
 
-            // Stream the content (with transparent reconnect when upstream drops)
-            var (_, stopReason) = await StreamContentAsync(finalStreamResponse, type, id, rangeStart, cancellationToken, getStreamFromOffset);
-            if (stopReason == StreamStopReason.UpstreamFailure)
+                initialResponse?.Dispose();
+
+                var useRangeWorkaround = RequiresClientSideRangeWorkaround(activeStreamResponse, rangeStart, rangeHeader);
+
+                // Upstream returned 206 but wrong offset — retry once through the original redirect URL with Range
+                // before falling back to client-side skipping (which only works for full 200 responses).
+                if (useRangeWorkaround &&
+                    activeStreamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent &&
+                    !string.IsNullOrEmpty(rangeHeader))
+                {
+                    _logger.LogInformation(
+                        "Jfresolve: Upstream 206 Content-Range mismatch for seek (requested bytes={Start}), re-resolving with Range via redirect URL",
+                        rangeStart);
+
+                    activeStreamResponse.Dispose();
+                    activeStreamResponse = null;
+
+                    var rangeRetryResponse = await ExecuteStreamRequestWithRetryAsync(
+                        streamHttpClient,
+                        () =>
+                        {
+                            var retryRequest = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
+                            retryRequest.Headers.Add("Range", rangeHeader);
+                            return retryRequest;
+                        },
+                        $"range seek retry via redirect URL {redirectUrl}",
+                        cancellationToken);
+
+                    if (rangeRetryResponse == null)
+                    {
+                        _logger.LogError("Jfresolve: Range seek retry failed for {RedirectUrl}", redirectUrl);
+                        return StatusCode(502, "Failed to seek in stream after retries");
+                    }
+
+                    activeStreamResponse = await FollowRedirectsAsync(streamHttpClient, rangeRetryResponse, redirectUrl, 5, cancellationToken);
+                    rangeRetryResponse.Dispose();
+
+                    if (activeStreamResponse == null || !activeStreamResponse.IsSuccessStatusCode)
+                    {
+                        activeStreamResponse?.Dispose();
+                        _logger.LogError("Jfresolve: Failed to follow redirects during range seek retry for {RedirectUrl}", redirectUrl);
+                        return StatusCode(502, "Failed to resolve stream URL after seek retry");
+                    }
+
+                    finalUrl = activeStreamResponse.RequestMessage?.RequestUri?.ToString();
+                    useRangeWorkaround = RequiresClientSideRangeWorkaround(activeStreamResponse, rangeStart, rangeHeader);
+                }
+
+                if (useRangeWorkaround && rangeStart.HasValue)
+                {
+                    if (activeStreamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent)
+                    {
+                        _logger.LogWarning(
+                            "Jfresolve: Upstream still returned mismatched 206 after seek retry (requested bytes={Start}); seek may fail",
+                            rangeStart.Value);
+                        useRangeWorkaround = false;
+                    }
+                    else
+                    {
+                        _logger.LogInformation(
+                            "Jfresolve: Using client-side range workaround for seek (requested bytes={Start}, upstream status={Status})",
+                            rangeStart.Value, (int)activeStreamResponse.StatusCode);
+                    }
+                }
+
+                CopyStreamResponseHeaders(activeStreamResponse, rangeStart, useRangeWorkaround);
+
+                // Build delegate to reconnect from byte offset when upstream drops mid-stream.
+                // Kodi/JellyCon (https://github.com/jellyfin/jellycon): JellyCon passes the play URL to Kodi via
+                // list_item.setPath(playurl); Kodi then opens that URL and reads the stream. Playback can drop
+                // every ~10 min on Kodi (upstream limit or Kodi closing the connection). Transparent reconnect
+                // keeps the stream alive without the client seeing an error.
+                string? urlForReconnect = finalUrl ?? redirectUrl;
+                Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null;
+                if (!string.IsNullOrEmpty(urlForReconnect))
+                {
+                    getStreamFromOffset = async (offset) =>
+                    {
+                        // Re-resolve through the addon redirect URL when reconnecting from a non-zero offset
+                        // so TorBox/debrid CDNs negotiate Range on a fresh redirect chain.
+                        var reconnectUrl = offset > 0 ? redirectUrl : urlForReconnect;
+                        var req = new HttpRequestMessage(HttpMethod.Get, reconnectUrl);
+                        req.Headers.Add("Range", $"bytes={offset}-");
+                        var resp = await streamHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                        if (resp == null || !resp.IsSuccessStatusCode)
+                        {
+                            resp?.Dispose();
+                            return (null, null);
+                        }
+
+                        if (offset > 0 && reconnectUrl == redirectUrl)
+                        {
+                            var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, cancellationToken);
+                            resp.Dispose();
+                            if (redirected == null || !redirected.IsSuccessStatusCode)
+                            {
+                                redirected?.Dispose();
+                                return (null, null);
+                            }
+
+                            var redirectedStream = await redirected.Content.ReadAsStreamAsync();
+                            return (redirectedStream, redirected);
+                        }
+
+                        var stream = await resp.Content.ReadAsStreamAsync();
+                        return (stream, resp);
+                    };
+                }
+
+                var (_, stopReason) = await StreamContentAsync(activeStreamResponse, type, id, rangeStart, cancellationToken, getStreamFromOffset, useRangeWorkaround);
+                if (stopReason == StreamStopReason.UpstreamFailure)
+                {
+                    _logger.LogWarning("Jfresolve: Stream ended after upstream failure for {Type}/{Id} (reconnect exhausted or unavailable)", type, id);
+                }
+            }
+            finally
             {
-                _logger.LogWarning("Jfresolve: Stream ended after upstream failure for {Type}/{Id} (reconnect exhausted or unavailable)", type, id);
+                activeStreamResponse?.Dispose();
             }
             
             return new EmptyResult();
@@ -1262,86 +1353,69 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Copies response headers from the stream response to the client response
     /// </summary>
-    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, string? rangeHeader, long? rangeStart)
+    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, long? rangeStart, bool useRangeWorkaround)
     {
-        // If upstream server doesn't support range requests (returns 200 instead of 206),
-        // but client requested a range, we need to handle it ourselves
-        bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
-        bool clientRequestedRange = !string.IsNullOrEmpty(rangeHeader) && rangeStart.HasValue;
-        
-        if (clientRequestedRange && !upstreamSupportsRange)
+        if (useRangeWorkaround && rangeStart.HasValue)
         {
-            // Upstream doesn't support range requests - we'll skip bytes ourselves
-            // Return 206 Partial Content to client even though upstream returned 200
+            // Upstream ignored or mishandled the Range request — skip bytes ourselves and synthesize 206 headers.
             Response.StatusCode = 206;
-            
-            // Calculate Content-Range header based on upstream Content-Length
-            // Format: "bytes start-end/total" or "bytes start-*/total" if we don't know end
-            long? totalLength = streamResponse.Content.Headers.ContentLength;
-            if (totalLength.HasValue && rangeStart.HasValue)
+
+            long? totalLength = null;
+            var contentRange = GetContentRangeHeader(streamResponse);
+            if (!string.IsNullOrEmpty(contentRange))
+            {
+                var (_, total) = ParseContentRange(contentRange);
+                totalLength = total;
+            }
+
+            if (!totalLength.HasValue)
+            {
+                totalLength = streamResponse.Content.Headers.ContentLength;
+            }
+
+            if (totalLength.HasValue)
             {
                 long start = rangeStart.Value;
-                long end = totalLength.Value - 1; // Content-Range end is inclusive
+                long end = totalLength.Value - 1;
                 long rangeLength = totalLength.Value - start;
-                
-                // Set Content-Range header: "bytes start-end/total"
+
                 SetResponseHeaderValue("Content-Range", $"bytes {start}-{end}/{totalLength.Value}");
-                
-                // Set Content-Length so clients (e.g. Kodi) can resume via Range requests. On client disconnect we abort the connection to avoid Kestrel's Content-Length mismatch.
                 Response.ContentLength = rangeLength;
-                
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})", 
+
+                _logger.LogDebug(
+                    "Jfresolve: Client-side range workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})",
                     start, end, totalLength.Value, rangeLength);
             }
-            else if (rangeStart.HasValue)
+            else
             {
-                // Don't know total length - can't set proper Content-Range
-                // This is okay, we'll still skip bytes and stream the rest
-                _logger.LogDebug("Jfresolve: Upstream server doesn't support range requests, implementing workaround (skipping {Bytes} bytes, unknown total length)", rangeStart.Value);
-                }
+                _logger.LogDebug(
+                    "Jfresolve: Client-side range workaround (skipping {Bytes} bytes, unknown total length)",
+                    rangeStart.Value);
+            }
         }
         else
         {
-            // Copy status code (206 for partial content if range was requested and supported)
             Response.StatusCode = (int)streamResponse.StatusCode;
-                
-                // Copy Content-Range header if present (for 206 Partial Content responses)
-                // Content-Range can be in response headers or content headers depending on the server
-                string? contentRangeValue = null;
-                if (streamResponse.Headers.TryGetValues("Content-Range", out var responseContentRange))
-                {
-                    contentRangeValue = responseContentRange.FirstOrDefault();
-                }
-                else if (streamResponse.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
-                {
-                    contentRangeValue = contentContentRange.FirstOrDefault();
-                }
-                
-                if (!string.IsNullOrEmpty(contentRangeValue))
-                {
-                    SetResponseHeaderValue("Content-Range", contentRangeValue);
-                }
-                
-            // Set Content-Length for 206 so clients can resume. On client disconnect we abort the connection to avoid Content-Length mismatch.
-            if (upstreamSupportsRange && 
-                streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent && 
+
+            var contentRangeValue = GetContentRangeHeader(streamResponse);
+            if (!string.IsNullOrEmpty(contentRangeValue))
+            {
+                SetResponseHeaderValue("Content-Range", contentRangeValue);
+            }
+
+            if (streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent &&
                 streamResponse.Content.Headers.ContentLength.HasValue)
             {
                 Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
             }
         }
 
-        // Copy headers that might be important for streaming
         if (streamResponse.Content.Headers.ContentType != null)
         {
             Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
         }
-        
-        // Copy Accept-Ranges header to indicate we support range requests
+
         SetResponseHeaderValue("Accept-Ranges", Constants.AcceptRangesBytes);
-        
-        // For 200 OK (when not implementing workaround), don't set Content-Length to avoid mismatch errors if connection resets
-        // This allows graceful handling of connection resets without "Content-Length mismatch" errors
     }
 
     /// <summary>
@@ -1369,7 +1443,8 @@ public class JfresolveApiController : ControllerBase
         string id,
         long? rangeStart,
         CancellationToken cancellationToken,
-        Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null)
+        Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null,
+        bool useRangeWorkaround = false)
     {
         const int bufferSize = Constants.StreamBufferSize;
         const int flushInterval = Constants.StreamFlushInterval;
@@ -1379,8 +1454,7 @@ public class JfresolveApiController : ControllerBase
         IDisposable? reconnectResponseToDispose = null;
         try
         {
-            bool upstreamSupportsRange = streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent;
-            bool needToSkipBytes = rangeStart.HasValue && !upstreamSupportsRange;
+            bool needToSkipBytes = useRangeWorkaround && rangeStart.HasValue;
             long bytesToSkip = needToSkipBytes && rangeStart.HasValue ? rangeStart.Value : 0;
             long bytesSkipped = 0;
             Stream? stream = await streamResponse.Content.ReadAsStreamAsync();
@@ -2640,6 +2714,80 @@ public class JfresolveApiController : ControllerBase
         }
 
         return currentResponse;
+    }
+
+    /// <summary>
+    /// Returns true when the client requested a byte range but upstream did not honor it
+    /// (returns 200, missing Content-Range, or 206 with a mismatched start offset).
+    /// TorBox/CDN and some debrid hosts may advertise range support but still send data from byte 0.
+    /// </summary>
+    private static bool RequiresClientSideRangeWorkaround(
+        HttpResponseMessage response,
+        long? requestedRangeStart,
+        string? rangeHeader)
+    {
+        if (string.IsNullOrEmpty(rangeHeader) || !requestedRangeStart.HasValue)
+            return false;
+
+        if (response.StatusCode != System.Net.HttpStatusCode.PartialContent)
+            return true;
+
+        var contentRange = GetContentRangeHeader(response);
+        if (string.IsNullOrEmpty(contentRange))
+            return true;
+
+        var (upstreamStart, _) = ParseContentRange(contentRange);
+        if (!upstreamStart.HasValue)
+            return true;
+
+        return upstreamStart.Value != requestedRangeStart.Value;
+    }
+
+    private static string? GetContentRangeHeader(HttpResponseMessage response)
+    {
+        if (response.Headers.TryGetValues("Content-Range", out var responseContentRange))
+            return responseContentRange.FirstOrDefault();
+
+        if (response.Content.Headers.TryGetValues("Content-Range", out var contentContentRange))
+            return contentContentRange.FirstOrDefault();
+
+        return null;
+    }
+
+    /// <summary>
+    /// Parses a Content-Range header (e.g. "bytes 0-1023/5000") into start offset and total size.
+    /// </summary>
+    private static (long? start, long? total) ParseContentRange(string contentRange)
+    {
+        if (string.IsNullOrWhiteSpace(contentRange))
+            return (null, null);
+
+        if (!contentRange.StartsWith("bytes ", StringComparison.OrdinalIgnoreCase))
+            return (null, null);
+
+        var slashIndex = contentRange.IndexOf('/');
+        if (slashIndex < 0)
+            return (null, null);
+
+        var rangePart = contentRange.Substring(6, slashIndex - 6).Trim();
+        var totalPart = contentRange.Substring(slashIndex + 1).Trim();
+
+        long? total = null;
+        if (!totalPart.Equals("*", StringComparison.Ordinal) && long.TryParse(totalPart, out var parsedTotal))
+            total = parsedTotal;
+
+        var dashIndex = rangePart.IndexOf('-');
+        if (dashIndex < 0)
+            return (null, total);
+
+        long? start = null;
+        if (!string.IsNullOrWhiteSpace(rangePart[..dashIndex]) &&
+            long.TryParse(rangePart[..dashIndex], out var parsedStart))
+        {
+            start = parsedStart;
+        }
+
+        return (start, total);
     }
 
     /// <summary>
