@@ -59,7 +59,7 @@ public static class UrlBuilder
     /// <summary>
     /// Torrentio defaults to limit=1 which hides MP4 alternatives needed for HTTP seek.
     /// </summary>
-    public static string IncreaseStreamLimit(string? manifestUrl, int minLimit = 10)
+    public static string IncreaseStreamLimit(string? manifestUrl, int minLimit = 25)
     {
         if (string.IsNullOrWhiteSpace(manifestUrl))
             return string.Empty;

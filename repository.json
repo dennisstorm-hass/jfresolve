@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.72",
+        "changelog": "Fix: Keep 4K quality for TorBox seek. No longer downgrades to 1080p MP4; keeps 4K MKV and uses TorBox createstream HLS for seek. Implements TorBox discovery flow, transcoding poll (up to 60s), and createstream retries. Prefers 4K MP4 within same tier when available; Torrentio limit raised to 25.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.72/jfresolve.zip",
+        "checksum": "9d2e618c647cef290ab96cf7edaef77f",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:02:00Z"
+      },
+      {
         "version": "1.0.0.71",
         "changelog": "Fix: TorBox seek when createstream fails (HTTP 500). Bump Torrentio limit to 10 for more stream choices, prefer MP4 over MKV for TorBox (falls back to lower quality MP4 if 4K is MKV-only), and retry createstream with alternate auth strategies plus API error body logging.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.71/jfresolve.zip",

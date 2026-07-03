@@ -34,9 +34,6 @@ public class StreamQualitySelector
         if (streamArray.Count == 0)
             return null;
 
-        if (preferSeekableContainers)
-            streamArray = PrioritizeSeekableStreams(streamArray);
-
         // If a specific quality is requested (Virtual Versioning), filter and pick by index
         if (!string.IsNullOrEmpty(requestedQuality))
         {
@@ -183,20 +180,23 @@ public class StreamQualitySelector
                 if (seekable.ValueKind != JsonValueKind.Undefined)
                 {
                     _logger.LogInformation(
-                        "Jfresolve: Auto-selected {Quality} seekable (MP4) stream (highest available)",
+                        "Jfresolve: Auto-selected {Quality} seekable (MP4) stream at same resolution tier",
                         quality);
                     return seekable;
                 }
 
-                // Only MKV at this tier — try a lower quality with MP4 for HTTP seek compatibility
-                continue;
+                // Keep 4K MKV when no MP4 at this tier — TorBox createstream HLS enables seek at full quality
+                _logger.LogInformation(
+                    "Jfresolve: Auto-selected {Quality} stream (MKV — TorBox HLS will be used for seek)",
+                    quality);
+                return matches[0];
             }
 
             _logger.LogInformation("Jfresolve: Auto-selected {Quality} stream (highest available)", quality);
             return matches[0];
         }
 
-        var fallback = preferSeekableContainers ? PrioritizeSeekableStreams(streams)[0] : streams[0];
+        var fallback = streams[0];
         _logger.LogInformation("Jfresolve: No quality indicators found, using first stream");
         return fallback;
     }
