@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.66",
+        "changelog": "Fix: MKV seek desync during Jellyfin HLS transcode. Forward upstream Content-Length on full responses, add HEAD support on resolve endpoint, cache/probe file size for FFmpeg byte-offset seeks, and improve Range handling for TorBox/debrid streams.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.66/jfresolve.zip",
+        "checksum": "0a316c0ff823cbbba7b2d63b99b90866",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T06:54:00Z"
+      },
+      {
         "version": "1.0.0.65",
         "changelog": "Fix: Seek/skip desync when streaming via TorBox and other debrid CDNs. Validate upstream Content-Range against requested Range, bypass cached CDN URLs on seek, retry through redirect chain with Range, and only use client-side byte skipping for full 200 responses.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.65/jfresolve.zip",

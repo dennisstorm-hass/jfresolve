@@ -13,6 +13,7 @@ using Jfresolve.Services;
 using MediaBrowser.Controller.Net;
 using Microsoft.AspNetCore.Connections.Features;
 using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
@@ -61,6 +62,9 @@ public class JfresolveApiController : ControllerBase
     // Key: original redirect URL, Value: (Final URL after redirects, ExpiryTime)
     private static readonly ConcurrentDictionary<string, (string FinalUrl, DateTime Expiry)> _resolvedUrlCache = new();
     private static DateTime _lastResolvedUrlCacheCleanup = DateTime.UtcNow;
+
+    // Upstream total file size cache (needed for FFmpeg MKV byte seeks when headers omit Content-Length)
+    private static readonly ConcurrentDictionary<string, (long ContentLength, DateTime Expiry)> _upstreamContentLengthCache = new();
 
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory)
@@ -235,6 +239,7 @@ public class JfresolveApiController : ControllerBase
     /// <param name="episode">Optional episode number (for series)</param>
     /// <returns>Proxied stream or error</returns>
     [HttpGet("resolve/{type}/{id}")]
+    [HttpHead("resolve/{type}/{id}")]
     [AllowAnonymous] // FFmpeg needs to access this endpoint without authentication
     public async Task<IActionResult> ResolveStream(
         string type,
@@ -305,8 +310,9 @@ public class JfresolveApiController : ControllerBase
                 return NotFound("No suitable stream found");
             }
 
-            // Proxy the stream
-            return await ProxyStreamAsync(redirectUrl, type, id);
+            // Proxy the stream (HEAD returns headers only — FFmpeg/ffprobe use this for Content-Length)
+            var headOnly = HttpMethods.IsHead(Request.Method);
+            return await ProxyStreamAsync(redirectUrl, type, id, headOnly);
         }
         catch (HttpRequestException ex)
         {
@@ -1024,7 +1030,7 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Proxies the stream from the redirect URL to the client
     /// </summary>
-    private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id)
+    private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id, bool headOnly = false)
     {
             // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
             // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
@@ -1059,6 +1065,7 @@ public class JfresolveApiController : ControllerBase
             // Use RequestAborted cancellation token so upstream request is cancelled when client disconnects
             // This ensures immediate cleanup when user stops playback
             var cancellationToken = HttpContext.RequestAborted;
+            var upstreamMethod = headOnly ? HttpMethod.Head : HttpMethod.Get;
             
             // Check cache for final resolved URL (after redirects) to speed up resume
             string? finalUrl = null;
@@ -1087,7 +1094,7 @@ public class JfresolveApiController : ControllerBase
                     streamHttpClient,
                     () =>
                     {
-                        var cachedRequest = new HttpRequestMessage(HttpMethod.Get, finalUrl);
+                        var cachedRequest = new HttpRequestMessage(upstreamMethod, finalUrl);
                         if (!string.IsNullOrEmpty(rangeHeader))
                         {
                             cachedRequest.Headers.Add("Range", rangeHeader);
@@ -1112,7 +1119,7 @@ public class JfresolveApiController : ControllerBase
                     streamHttpClient,
                     () =>
                     {
-                        var retryRequest = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
+                        var retryRequest = new HttpRequestMessage(upstreamMethod, redirectUrl);
                         if (!string.IsNullOrEmpty(rangeHeader))
                         {
                             retryRequest.Headers.Add("Range", rangeHeader);
@@ -1130,7 +1137,7 @@ public class JfresolveApiController : ControllerBase
                 
                 // Handle redirects (302, 301, etc.) - follow up to 5 redirects
                 // FollowRedirectsAsync will dispose initialResponse if redirects are followed
-                streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, cancellationToken);
+                streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, upstreamMethod, cancellationToken);
                 if (streamResponse == null)
                 {
                     initialResponse?.Dispose(); // Dispose if redirects failed
@@ -1181,20 +1188,20 @@ public class JfresolveApiController : ControllerBase
                         streamHttpClient,
                         () =>
                         {
-                            var retryRequest = new HttpRequestMessage(HttpMethod.Get, redirectUrl);
-                            retryRequest.Headers.Add("Range", rangeHeader);
-                            return retryRequest;
-                        },
-                        $"range seek retry via redirect URL {redirectUrl}",
-                        cancellationToken);
+                        var retryRequest = new HttpRequestMessage(upstreamMethod, redirectUrl);
+                        retryRequest.Headers.Add("Range", rangeHeader);
+                        return retryRequest;
+                    },
+                    $"range seek retry via redirect URL {redirectUrl}",
+                    cancellationToken);
 
-                    if (rangeRetryResponse == null)
-                    {
-                        _logger.LogError("Jfresolve: Range seek retry failed for {RedirectUrl}", redirectUrl);
-                        return StatusCode(502, "Failed to seek in stream after retries");
-                    }
+                if (rangeRetryResponse == null)
+                {
+                    _logger.LogError("Jfresolve: Range seek retry failed for {RedirectUrl}", redirectUrl);
+                    return StatusCode(502, "Failed to seek in stream after retries");
+                }
 
-                    activeStreamResponse = await FollowRedirectsAsync(streamHttpClient, rangeRetryResponse, redirectUrl, 5, cancellationToken);
+                activeStreamResponse = await FollowRedirectsAsync(streamHttpClient, rangeRetryResponse, redirectUrl, 5, upstreamMethod, cancellationToken);
                     rangeRetryResponse.Dispose();
 
                     if (activeStreamResponse == null || !activeStreamResponse.IsSuccessStatusCode)
@@ -1225,7 +1232,27 @@ public class JfresolveApiController : ControllerBase
                     }
                 }
 
-                CopyStreamResponseHeaders(activeStreamResponse, rangeStart, useRangeWorkaround);
+                var cacheKey = finalUrl ?? redirectUrl;
+                if (useRangeWorkaround && rangeStart.HasValue &&
+                    !GetUpstreamTotalContentLength(activeStreamResponse).HasValue &&
+                    !TryGetCachedUpstreamContentLength(cacheKey).HasValue)
+                {
+                    var probedLength = await ProbeUpstreamContentLengthAsync(streamHttpClient, cacheKey, cancellationToken);
+                    if (probedLength.HasValue)
+                    {
+                        CacheUpstreamContentLength(cacheKey, probedLength.Value);
+                        _logger.LogInformation("Jfresolve: Probed upstream Content-Length {Length} for seek on {Url}", probedLength.Value, cacheKey);
+                    }
+                }
+
+                CopyStreamResponseHeaders(activeStreamResponse, rangeStart, useRangeWorkaround, cacheKey);
+
+                if (headOnly)
+                {
+                    _logger.LogDebug("Jfresolve: HEAD probe complete for {RedirectUrl} (status {Status}, length {Length})",
+                        redirectUrl, Response.StatusCode, Response.ContentLength);
+                    return new EmptyResult();
+                }
 
                 // Build delegate to reconnect from byte offset when upstream drops mid-stream.
                 // Kodi/JellyCon (https://github.com/jellyfin/jellycon): JellyCon passes the play URL to Kodi via
@@ -1252,7 +1279,7 @@ public class JfresolveApiController : ControllerBase
 
                         if (offset > 0 && reconnectUrl == redirectUrl)
                         {
-                            var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, cancellationToken);
+                            var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, HttpMethod.Get, cancellationToken);
                             resp.Dispose();
                             if (redirected == null || !redirected.IsSuccessStatusCode)
                             {
@@ -1353,24 +1380,17 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Copies response headers from the stream response to the client response
     /// </summary>
-    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, long? rangeStart, bool useRangeWorkaround)
+    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, long? rangeStart, bool useRangeWorkaround, string cacheKey)
     {
         if (useRangeWorkaround && rangeStart.HasValue)
         {
             // Upstream ignored or mishandled the Range request — skip bytes ourselves and synthesize 206 headers.
             Response.StatusCode = 206;
 
-            long? totalLength = null;
-            var contentRange = GetContentRangeHeader(streamResponse);
-            if (!string.IsNullOrEmpty(contentRange))
-            {
-                var (_, total) = ParseContentRange(contentRange);
-                totalLength = total;
-            }
-
+            long? totalLength = GetUpstreamTotalContentLength(streamResponse);
             if (!totalLength.HasValue)
             {
-                totalLength = streamResponse.Content.Headers.ContentLength;
+                totalLength = TryGetCachedUpstreamContentLength(cacheKey);
             }
 
             if (totalLength.HasValue)
@@ -1381,15 +1401,16 @@ public class JfresolveApiController : ControllerBase
 
                 SetResponseHeaderValue("Content-Range", $"bytes {start}-{end}/{totalLength.Value}");
                 Response.ContentLength = rangeLength;
+                CacheUpstreamContentLength(cacheKey, totalLength.Value);
 
-                _logger.LogDebug(
+                _logger.LogInformation(
                     "Jfresolve: Client-side range workaround (Range: bytes {Start}-{End}/{Total}, Content-Length: {Length})",
                     start, end, totalLength.Value, rangeLength);
             }
             else
             {
-                _logger.LogDebug(
-                    "Jfresolve: Client-side range workaround (skipping {Bytes} bytes, unknown total length)",
+                _logger.LogWarning(
+                    "Jfresolve: Client-side range workaround without known total length (skipping {Bytes} bytes)",
                     rangeStart.Value);
             }
         }
@@ -1407,6 +1428,18 @@ public class JfresolveApiController : ControllerBase
                 streamResponse.Content.Headers.ContentLength.HasValue)
             {
                 Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+            }
+            else if (streamResponse.StatusCode == System.Net.HttpStatusCode.OK)
+            {
+                // FFmpeg MKV seeks need total file size (Content-Length) to calculate HTTP byte offsets.
+                var totalLength = GetUpstreamTotalContentLength(streamResponse)
+                    ?? TryGetCachedUpstreamContentLength(cacheKey);
+                if (totalLength.HasValue)
+                {
+                    Response.ContentLength = totalLength.Value;
+                    CacheUpstreamContentLength(cacheKey, totalLength.Value);
+                    _logger.LogDebug("Jfresolve: Forwarding upstream Content-Length {Length} for {CacheKey}", totalLength.Value, cacheKey);
+                }
             }
         }
 
@@ -2626,6 +2659,7 @@ public class JfresolveApiController : ControllerBase
         HttpResponseMessage response,
         string originalUrl,
         int maxRedirects,
+        HttpMethod method,
         CancellationToken cancellationToken = default)
     {
         var currentResponse = response;
@@ -2691,7 +2725,7 @@ public class JfresolveApiController : ControllerBase
             }
 
             // Create new request for redirect
-            var redirectRequest = new HttpRequestMessage(HttpMethod.Get, location);
+            var redirectRequest = new HttpRequestMessage(method, location);
             
             // Preserve Range header from original request if present
             // Note: We need to get this from the original request context
@@ -2714,6 +2748,78 @@ public class JfresolveApiController : ControllerBase
         }
 
         return currentResponse;
+    }
+
+    private static long? GetUpstreamTotalContentLength(HttpResponseMessage response)
+    {
+        var contentRange = GetContentRangeHeader(response);
+        if (!string.IsNullOrEmpty(contentRange))
+        {
+            var (_, total) = ParseContentRange(contentRange);
+            if (total.HasValue)
+                return total.Value;
+        }
+
+        if (response.Content.Headers.ContentLength.HasValue)
+            return response.Content.Headers.ContentLength.Value;
+
+        return null;
+    }
+
+    private static void CacheUpstreamContentLength(string cacheKey, long contentLength)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey) || contentLength <= 0)
+            return;
+
+        _upstreamContentLengthCache.AddOrUpdate(
+            cacheKey,
+            (contentLength, DateTime.UtcNow.Add(Constants.ResolvedUrlCacheExpiry)),
+            (_, _) => (contentLength, DateTime.UtcNow.Add(Constants.ResolvedUrlCacheExpiry)));
+    }
+
+    private static long? TryGetCachedUpstreamContentLength(string cacheKey)
+    {
+        if (string.IsNullOrWhiteSpace(cacheKey))
+            return null;
+
+        if (_upstreamContentLengthCache.TryGetValue(cacheKey, out var cached) && cached.Expiry > DateTime.UtcNow)
+            return cached.ContentLength;
+
+        return null;
+    }
+
+    private async Task<long?> ProbeUpstreamContentLengthAsync(HttpClient httpClient, string url, CancellationToken cancellationToken)
+    {
+        try
+        {
+            using var headRequest = new HttpRequestMessage(HttpMethod.Head, url);
+            using var headResponse = await httpClient.SendAsync(headRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (headResponse.IsSuccessStatusCode)
+            {
+                var length = GetUpstreamTotalContentLength(headResponse);
+                if (length.HasValue)
+                    return length;
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Jfresolve: HEAD probe failed for {Url}", url);
+        }
+
+        try
+        {
+            using var rangeRequest = new HttpRequestMessage(HttpMethod.Get, url);
+            rangeRequest.Headers.Add("Range", "bytes=0-0");
+            using var rangeResponse = await httpClient.SendAsync(rangeRequest, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (rangeResponse.IsSuccessStatusCode)
+                return GetUpstreamTotalContentLength(rangeResponse);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogDebug(ex, "Jfresolve: Range probe failed for {Url}", url);
+        }
+
+        return null;
     }
 
     /// <summary>
