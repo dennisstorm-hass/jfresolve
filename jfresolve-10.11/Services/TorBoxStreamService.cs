@@ -196,55 +196,185 @@ public class TorBoxStreamService
     {
         try
         {
-            var query =
+            var createQuery =
                 $"id={Uri.EscapeDataString(torrentId)}" +
                 $"&file_id={Uri.EscapeDataString(fileId)}" +
-                "&type=torrent" +
-                "&chosen_audio_index=0";
+                "&type=torrent";
 
-            var client = _httpClientFactory.CreateClient("Jfresolve.TorBox");
-            using var request = new HttpRequestMessage(HttpMethod.Get, $"{TorBoxStreamApi}/createstream?{query}");
-            request.Headers.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-
-            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-            if (!response.IsSuccessStatusCode)
+            var createDoc = await SendTorBoxApiGetAsync(
+                $"{TorBoxStreamApi}/createstream?{createQuery}",
+                apiKey,
+                cancellationToken);
+            if (createDoc == null)
             {
-                _logger.LogDebug(
-                    "Jfresolve: TorBox createstream returned {Status} for torrent {TorrentId} file {FileId}",
-                    (int)response.StatusCode, torrentId, fileId);
+                _logger.LogInformation(
+                    "Jfresolve: TorBox createstream failed for torrent {TorrentId} file {FileId}",
+                    torrentId, fileId);
                 return null;
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var doc = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
-
-            if (!doc.RootElement.TryGetProperty("success", out var successProp) ||
-                successProp.ValueKind != JsonValueKind.True)
+            if (!TryGetTorBoxDataObject(createDoc, out var createData))
             {
+                LogTorBoxApiFailure("createstream", createDoc, torrentId, fileId);
                 return null;
             }
 
-            if (!doc.RootElement.TryGetProperty("data", out var data))
+            // createstream returns a token used as presigned_token for getstreamdata
+            var presignedToken = GetJsonString(createData, "presigned_token")
+                ?? GetJsonString(createData, "token");
+            if (string.IsNullOrWhiteSpace(presignedToken))
+            {
+                // Some API versions may return hls_url directly from createstream
+                var directHls = ExtractHlsUrlFromStreamData(createData);
+                if (!string.IsNullOrWhiteSpace(directHls))
+                    return directHls;
+
+                LogTorBoxApiFailure("createstream (no token)", createDoc, torrentId, fileId);
                 return null;
-
-            if (data.TryGetProperty("hls_url", out var hlsUrlProp))
-            {
-                var hlsUrl = hlsUrlProp.GetString();
-                if (!string.IsNullOrWhiteSpace(hlsUrl))
-                    return hlsUrl;
             }
 
-            // Some responses nest stream URL under domain + path
-            if (data.TryGetProperty("webdav_url", out var webDavProp))
+            var streamQuery =
+                $"presigned_token={Uri.EscapeDataString(presignedToken)}" +
+                $"&token={Uri.EscapeDataString(apiKey)}";
+
+            var streamDoc = await SendTorBoxApiGetAsync(
+                $"{TorBoxStreamApi}/getstreamdata?{streamQuery}",
+                apiKey,
+                cancellationToken,
+                useBearerAuth: false);
+            if (streamDoc == null)
             {
-                var webDav = webDavProp.GetString();
-                if (!string.IsNullOrWhiteSpace(webDav) && webDav.Contains(".m3u8", StringComparison.OrdinalIgnoreCase))
-                    return webDav;
+                _logger.LogInformation(
+                    "Jfresolve: TorBox getstreamdata failed for torrent {TorrentId} file {FileId}",
+                    torrentId, fileId);
+                return null;
             }
+
+            if (!TryGetTorBoxDataObject(streamDoc, out var streamData))
+            {
+                LogTorBoxApiFailure("getstreamdata", streamDoc, torrentId, fileId);
+                return null;
+            }
+
+            var hlsUrl = ExtractHlsUrlFromStreamData(streamData);
+            if (!string.IsNullOrWhiteSpace(hlsUrl))
+                return hlsUrl;
+
+            LogTorBoxApiFailure("getstreamdata (no hls_url)", streamDoc, torrentId, fileId);
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Jfresolve: TorBox createstream failed for torrent {TorrentId} file {FileId}", torrentId, fileId);
+            _logger.LogInformation(
+                ex,
+                "Jfresolve: TorBox createstream/getstreamdata failed for torrent {TorrentId} file {FileId}",
+                torrentId, fileId);
+        }
+
+        return null;
+    }
+
+    private async Task<JsonDocument?> SendTorBoxApiGetAsync(
+        string url,
+        string apiKey,
+        CancellationToken cancellationToken,
+        bool useBearerAuth = true)
+    {
+        var client = _httpClientFactory.CreateClient("Jfresolve.TorBox");
+        using var request = new HttpRequestMessage(HttpMethod.Get, url);
+        if (useBearerAuth)
+        {
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+        }
+
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogInformation(
+                "Jfresolve: TorBox API {Url} returned HTTP {Status}",
+                url.Split('?')[0], (int)response.StatusCode);
+            return null;
+        }
+
+        await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
+        return await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+    }
+
+    private static bool TryGetTorBoxDataObject(JsonDocument doc, out JsonElement data)
+    {
+        data = default;
+        var root = doc.RootElement;
+
+        if (root.TryGetProperty("success", out var successProp) &&
+            successProp.ValueKind == JsonValueKind.False)
+        {
+            return false;
+        }
+
+        if (!root.TryGetProperty("data", out data) || data.ValueKind != JsonValueKind.Object)
+            return false;
+
+        return true;
+    }
+
+    private void LogTorBoxApiFailure(string step, JsonDocument doc, string torrentId, string fileId)
+    {
+        var root = doc.RootElement;
+        var detail = root.TryGetProperty("detail", out var detailProp)
+            ? detailProp.GetString()
+            : null;
+        var error = root.TryGetProperty("error", out var errorProp)
+            ? errorProp.GetString()
+            : null;
+
+        _logger.LogInformation(
+            "Jfresolve: TorBox {Step} returned no HLS for torrent {TorrentId} file {FileId} (error={Error}, detail={Detail})",
+            step, torrentId, fileId, error ?? "none", detail ?? "none");
+    }
+
+    private static string? GetJsonString(JsonElement element, string propertyName)
+    {
+        if (!element.TryGetProperty(propertyName, out var prop))
+            return null;
+
+        return prop.ValueKind switch
+        {
+            JsonValueKind.String => prop.GetString(),
+            JsonValueKind.Number => prop.GetRawText(),
+            _ => null,
+        };
+    }
+
+    private static string? ExtractHlsUrlFromStreamData(JsonElement data)
+    {
+        var hlsUrl = GetJsonString(data, "hls_url");
+        if (!string.IsNullOrWhiteSpace(hlsUrl))
+            return hlsUrl;
+
+        if (data.TryGetProperty("streams", out var streams) && streams.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var stream in streams.EnumerateArray())
+            {
+                var streamUrl = GetJsonString(stream, "url") ?? GetJsonString(stream, "hls_url");
+                if (!string.IsNullOrWhiteSpace(streamUrl) &&
+                    streamUrl.Contains(".m3u8", StringComparison.OrdinalIgnoreCase))
+                {
+                    return streamUrl;
+                }
+            }
+        }
+
+        if (data.TryGetProperty("urls", out var urls) && urls.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var url in urls.EnumerateArray())
+            {
+                var streamUrl = url.ValueKind == JsonValueKind.String ? url.GetString() : null;
+                if (!string.IsNullOrWhiteSpace(streamUrl) &&
+                    streamUrl.Contains(".m3u8", StringComparison.OrdinalIgnoreCase))
+                {
+                    return streamUrl;
+                }
+            }
         }
 
         return null;

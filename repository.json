@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.70",
+        "changelog": "Fix: TorBox createstream two-step HLS flow. createstream only returns a token; call getstreamdata to obtain hls_url. Adds diagnostic logging when HLS resolution fails.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.70/jfresolve.zip",
+        "checksum": "b6fbb60221d8e347a9fef0220fb9f4b4",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T09:48:00Z"
+      },
+      {
         "version": "1.0.0.69",
         "changelog": "Fix: TorBox seek via createstream HLS. Prefer TorBox createstream API (segment-based HLS) over MKV requestdl for seekable playback; proxy m3u8 playlists and segments through the resolve endpoint with hlsSeg URLs; fall back to requestdl when createstream is unavailable.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.69/jfresolve.zip",
