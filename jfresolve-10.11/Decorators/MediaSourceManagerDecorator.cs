@@ -552,9 +552,55 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (!string.IsNullOrWhiteSpace(config?.TorBoxApiKey))
         {
             info.Container = null;
+            ApplyTorBoxStreamPath(info);
         }
 
         ApplyEstimatedSize(info);
+    }
+
+    /// <summary>
+    /// TorBox items always use stream.m3u8 in the media path so FFmpeg selects the HLS demuxer on seek.
+    /// Initial playback redirects to the direct MKV resolve URL; seeks are served as HLS at the same path.
+    /// </summary>
+    private void ApplyTorBoxStreamPath(MediaSourceInfo info)
+    {
+        if (string.IsNullOrEmpty(info.Path)
+            || !info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
+            || info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        TryCacheTorBoxRuntime(info);
+
+        var queryIndex = info.Path.IndexOf('?');
+        var pathOnly = queryIndex >= 0 ? info.Path[..queryIndex] : info.Path;
+        var query = queryIndex >= 0 ? info.Path[queryIndex..] : string.Empty;
+        info.Path = $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
+    }
+
+    private static void TryCacheTorBoxRuntime(MediaSourceInfo info)
+    {
+        if (info.RunTimeTicks is not > 0)
+            return;
+
+        var path = info.Path;
+        var movieIdx = path.IndexOf("/resolve/movie/", StringComparison.OrdinalIgnoreCase);
+        if (movieIdx >= 0)
+        {
+            var id = path[(movieIdx + "/resolve/movie/".Length)..].Split('?', '/')[0];
+            if (!string.IsNullOrWhiteSpace(id))
+                TorBoxPlaybackCache.SetRuntimeTicks("movie", id, info.RunTimeTicks.Value);
+            return;
+        }
+
+        var seriesIdx = path.IndexOf("/resolve/series/", StringComparison.OrdinalIgnoreCase);
+        if (seriesIdx < 0)
+            return;
+
+        var seriesId = path[(seriesIdx + "/resolve/series/".Length)..].Split('?', '/')[0];
+        if (!string.IsNullOrWhiteSpace(seriesId))
+            TorBoxPlaybackCache.SetRuntimeTicks("series", seriesId, info.RunTimeTicks.Value);
     }
 
     /// <summary>
@@ -571,6 +617,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
         if (!SeekPositionCache.ShouldUseHlsPath())
             return;
+
+        TryCacheTorBoxRuntime(info);
 
         var queryIndex = info.Path.IndexOf('?');
         var pathOnly = queryIndex >= 0 ? info.Path[..queryIndex] : info.Path;
@@ -691,7 +739,18 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         => _inner.SetDefaultAudioAndSubtitleStreamIndices(item, source, user);
 
     public Task AddMediaInfoWithProbe(MediaSourceInfo mediaSource, bool isAudio, string? cacheKey, bool addProbeDelay, bool isLiveStream, CancellationToken cancellationToken)
-        => _inner.AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, isLiveStream, cancellationToken);
+    {
+        if (mediaSource != null
+            && !string.IsNullOrEmpty(mediaSource.Path)
+            && mediaSource.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyTrick(mediaSource);
+            if (SeekPositionCache.ShouldUseHlsPath())
+                ApplySeekHlsPath(mediaSource);
+        }
+
+        return _inner.AddMediaInfoWithProbe(mediaSource, isAudio, cacheKey, addProbeDelay, isLiveStream, cancellationToken);
+    }
     
     /// <summary>
     /// Merge streams from database with existing streams, preserving existing stream objects when indices match

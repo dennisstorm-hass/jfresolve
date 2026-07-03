@@ -17,6 +17,8 @@ public sealed class StreamingSeekCaptureFilter : IActionFilter
         if (TryReadStartTicks(request.Query, out var queryTicks))
         {
             SeekPositionCache.SetPending(queryTicks);
+            if (queryTicks > 0)
+                SeekPositionCache.MarkSeekRestart();
             return;
         }
 
@@ -37,12 +39,14 @@ public sealed class StreamingSeekCaptureFilter : IActionFilter
             if (prop?.PropertyType == typeof(long?) && prop.GetValue(argument) is long ticks && ticks > 0)
             {
                 SeekPositionCache.SetPending(ticks);
+                SeekPositionCache.MarkSeekRestart();
                 return;
             }
 
             if (prop?.PropertyType == typeof(long) && prop.GetValue(argument) is long ticksNonNull && ticksNonNull > 0)
             {
                 SeekPositionCache.SetPending(ticksNonNull);
+                SeekPositionCache.MarkSeekRestart();
                 return;
             }
         }
