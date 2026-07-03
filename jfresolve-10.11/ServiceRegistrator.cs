@@ -35,6 +35,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<JfresolveSeriesProvider>();
         services.AddSingleton<Services.StreamQualitySelector>();
         services.AddSingleton<Services.UserPreferencesService>();
+        services.AddSingleton<Services.TorBoxStreamService>();
         services.AddSingleton<SearchActionFilter>();
         services.AddSingleton<InsertActionFilter>();
         services.AddSingleton<ImageResourceFilter>();
@@ -72,6 +73,15 @@ public class ServiceRegistrator : IPluginServiceRegistrator
                 MaxConnectionsPerServer = Constants.StreamHttpClientMaxConnectionsPerServer,
                 AllowAutoRedirect = false // We handle redirects manually
             })
+            .SetHandlerLifetime(Constants.StreamHttpClientHandlerLifetime);
+
+        services.AddHttpClient("Jfresolve.TorBox")
+            .ConfigurePrimaryHttpMessageHandler(() => new HttpClientHandler
+            {
+                MaxConnectionsPerServer = 5,
+                AllowAutoRedirect = false
+            })
+            .ConfigureHttpClient(client => client.Timeout = TimeSpan.FromSeconds(Constants.TorBoxApiTimeoutSeconds))
             .SetHandlerLifetime(Constants.StreamHttpClientHandlerLifetime);
         
         // Register HttpContextAccessor for accessing HTTP context in decorators (required for Jellyfin 10.11.6 compatibility)

@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.68",
+        "changelog": "Fix: TorBox MKV seek via native requestdl permalinks. Rewrite Torrentio TorBox URLs to api.torbox.app requestdl?redirect=true (mylist lookup or redirect discovery), stop caching short-lived CDN URLs, and always re-follow the redirect chain per FFmpeg request.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.68/jfresolve.zip",
+        "checksum": "1c15fb1807cfc15052654fcdc3481ac1",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T07:20:00Z"
+      },
+      {
         "version": "1.0.0.67",
         "changelog": "Fix: MKV seek desync during Jellyfin HLS transcode (follow-up). Normalize suffix Range requests (bytes=-N) for MKV cue/index reads, always probe and forward Content-Length, estimate MediaSource Size from bitrate/runtime, and restore real plugin logging for seek diagnostics.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.67/jfresolve.zip",

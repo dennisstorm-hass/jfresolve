@@ -42,6 +42,7 @@ public class JfresolveApiController : ControllerBase
     private readonly ILogger<JfresolveApiController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
     private readonly StreamQualitySelector _qualitySelector;
+    private readonly Services.TorBoxStreamService _torBoxStreamService;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
 
     // Failover cache: tracks recent playback attempts with time windows
@@ -69,11 +70,13 @@ public class JfresolveApiController : ControllerBase
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
         ILogger<JfresolveApiController> logger,
-        ILogger<StreamQualitySelector> qualitySelectorLogger)
+        ILogger<StreamQualitySelector> qualitySelectorLogger,
+        Services.TorBoxStreamService torBoxStreamService)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
         _qualitySelector = new StreamQualitySelector(qualitySelectorLogger);
+        _torBoxStreamService = torBoxStreamService;
         _addonCircuitBreaker = new Services.CircuitBreaker(
             "StremioAddon",
             NullLogger<Services.CircuitBreaker>.Instance,
@@ -316,6 +319,10 @@ public class JfresolveApiController : ControllerBase
 
             // Proxy the stream (HEAD returns headers only — FFmpeg/ffprobe use this for Content-Length)
             var headOnly = HttpMethods.IsHead(Request.Method);
+            redirectUrl = await NormalizeStreamUpstreamUrlAsync(
+                redirectUrl,
+                GetPluginConfiguration()?.TorBoxApiKey,
+                HttpContext.RequestAborted);
             return await ProxyStreamAsync(redirectUrl, type, id, headOnly);
         }
         catch (HttpRequestException ex)
@@ -515,7 +522,8 @@ public class JfresolveApiController : ControllerBase
         {
             _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
                 type, id, season ?? "N/A", episode ?? "N/A");
-            return cachedRedirect.RedirectUrl;
+            return await NormalizeStreamUpstreamUrlAsync(
+                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None);
         }
 
         // Get streams from addon (returns JsonDocument that must be kept alive)
@@ -537,6 +545,8 @@ public class JfresolveApiController : ControllerBase
             // Cache the resolved redirect URL for future Range requests
             if (!string.IsNullOrWhiteSpace(redirectUrl))
             {
+                redirectUrl = await NormalizeStreamUpstreamUrlAsync(
+                    redirectUrl, config.TorBoxApiKey, CancellationToken.None);
                 var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                 _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
                 _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
@@ -1032,6 +1042,22 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
+    /// Rewrites Torrentio TorBox resolve URLs to TorBox requestdl permalinks when possible.
+    /// </summary>
+    private async Task<string> NormalizeStreamUpstreamUrlAsync(
+        string redirectUrl,
+        string? torBoxApiKey,
+        CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(redirectUrl))
+            return redirectUrl;
+
+        var normalized = await _torBoxStreamService.TryNormalizeToRequestDlPermalinkAsync(
+            redirectUrl, torBoxApiKey, cancellationToken);
+        return normalized ?? redirectUrl;
+    }
+
+    /// <summary>
     /// Proxies the stream from the redirect URL to the client
     /// </summary>
     private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id, bool headOnly = false)
@@ -1091,92 +1117,49 @@ public class JfresolveApiController : ControllerBase
             
             // Check cache for final resolved URL (after redirects) to speed up resume
             string? finalUrl = null;
-            var now = DateTime.UtcNow;
-            CleanupResolvedUrlCacheIfNeeded();
 
-            // On seek (non-zero Range or suffix cue read), bypass the cached CDN URL and re-follow redirects with Range.
-            // TorBox/debrid CDNs may ignore Range on cached permalinks or return 206 with data from byte 0.
-            var isSeekRequest = rangeStart.HasValue && rangeStart.Value > 0;
-            if (!isSeekRequest &&
-                _resolvedUrlCache.TryGetValue(redirectUrl, out var cachedResolved) &&
-                cachedResolved.Expiry > now)
-            {
-                finalUrl = cachedResolved.FinalUrl;
-                _logger.LogDebug("Jfresolve: Using cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
-            }
-            
+            // TorBox/debrid CDNs are short-lived — always follow the permalink/redirect chain per request.
+            // Never reuse a cached CDN URL (stale links break MKV range/cue reads on seek).
             HttpResponseMessage? streamResponse = null;
             HttpResponseMessage? initialResponse = null;
             
-            if (finalUrl != null)
-            {
-                // Use cached final URL - skip redirect following for faster resume
-                // Retry initial connection on transient failures
-                streamResponse = await ExecuteStreamRequestWithRetryAsync(
-                    streamHttpClient,
-                    () =>
+            // Follow redirects to get final URL (every request)
+            initialResponse = await ExecuteStreamRequestWithRetryAsync(
+                streamHttpClient,
+                () =>
+                {
+                    var retryRequest = new HttpRequestMessage(upstreamMethod, redirectUrl);
+                    if (!string.IsNullOrEmpty(rangeHeader))
                     {
-                        var cachedRequest = new HttpRequestMessage(upstreamMethod, finalUrl);
-                        if (!string.IsNullOrEmpty(rangeHeader))
-                        {
-                            cachedRequest.Headers.Add("Range", rangeHeader);
-                        }
-                        return cachedRequest;
-                    },
-                    $"cached stream URL {finalUrl}",
-                    cancellationToken);
-                
-                if (streamResponse == null)
-                {
-                    _logger.LogError("Jfresolve: Failed to connect to cached stream URL after retries: {FinalUrl}", finalUrl);
-                    return StatusCode(502, "Failed to connect to stream after retries");
-                }
-            }
-            else
+                        retryRequest.Headers.Add("Range", rangeHeader);
+                    }
+                    return retryRequest;
+                },
+                $"initial redirect URL {redirectUrl}",
+                cancellationToken);
+
+            if (initialResponse == null)
             {
-                // Follow redirects to get final URL (first time or cache expired)
-                // Retry initial connection on transient failures
-                // Create a new request message for each retry attempt
-                initialResponse = await ExecuteStreamRequestWithRetryAsync(
-                    streamHttpClient,
-                    () =>
-                    {
-                        var retryRequest = new HttpRequestMessage(upstreamMethod, redirectUrl);
-                        if (!string.IsNullOrEmpty(rangeHeader))
-                        {
-                            retryRequest.Headers.Add("Range", rangeHeader);
-                        }
-                        return retryRequest;
-                    },
-                    $"initial redirect URL {redirectUrl}",
-                    cancellationToken);
-                
-                if (initialResponse == null)
-                {
-                    _logger.LogError("Jfresolve: Failed to connect to redirect URL after retries: {RedirectUrl}", redirectUrl);
-                    return StatusCode(502, "Failed to connect to stream URL after retries");
-                }
-                
-                // Handle redirects (302, 301, etc.) - follow up to 5 redirects
-                // FollowRedirectsAsync will dispose initialResponse if redirects are followed
-                streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, upstreamMethod, cancellationToken);
-                if (streamResponse == null)
-                {
-                    initialResponse?.Dispose(); // Dispose if redirects failed
-                    _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
-                    return StatusCode(502, "Failed to resolve stream URL after redirects");
-                }
-                
-                // Cache the final resolved URL for faster resume
-                finalUrl = streamResponse.RequestMessage?.RequestUri?.ToString();
-                if (!string.IsNullOrEmpty(finalUrl) && finalUrl != redirectUrl)
-                {
-                    _resolvedUrlCache.TryAdd(redirectUrl, (finalUrl, now.Add(Constants.ResolvedUrlCacheExpiry)));
-                    _logger.LogDebug("Jfresolve: Cached resolved URL for {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
-                }
+                _logger.LogError("Jfresolve: Failed to connect to redirect URL after retries: {RedirectUrl}", redirectUrl);
+                return StatusCode(502, "Failed to connect to stream URL after retries");
             }
-            
-            // Use the final response (after following redirects or from cache)
+
+            // Handle redirects (302, 301, etc.) - follow up to 5 redirects
+            streamResponse = await FollowRedirectsAsync(streamHttpClient, initialResponse, redirectUrl, 5, upstreamMethod, cancellationToken);
+            if (streamResponse == null)
+            {
+                initialResponse?.Dispose();
+                _logger.LogError("Jfresolve: Failed to follow redirects for {RedirectUrl}", redirectUrl);
+                return StatusCode(502, "Failed to resolve stream URL after redirects");
+            }
+
+            finalUrl = streamResponse.RequestMessage?.RequestUri?.ToString();
+            if (!string.IsNullOrEmpty(finalUrl) && finalUrl != redirectUrl)
+            {
+                _logger.LogDebug("Jfresolve: Resolved {RedirectUrl} -> {FinalUrl}", redirectUrl, finalUrl);
+            }
+
+            // Use the final response (after following redirects)
             HttpResponseMessage? activeStreamResponse = streamResponse;
 
             try
@@ -1302,15 +1285,14 @@ public class JfresolveApiController : ControllerBase
                 // list_item.setPath(playurl); Kodi then opens that URL and reads the stream. Playback can drop
                 // every ~10 min on Kodi (upstream limit or Kodi closing the connection). Transparent reconnect
                 // keeps the stream alive without the client seeing an error.
-                string? urlForReconnect = finalUrl ?? redirectUrl;
+                string? urlForReconnect = redirectUrl;
                 Func<long, Task<(Stream? stream, IDisposable? toDispose)>>? getStreamFromOffset = null;
                 if (!string.IsNullOrEmpty(urlForReconnect))
                 {
                     getStreamFromOffset = async (offset) =>
                     {
-                        // Re-resolve through the addon redirect URL when reconnecting from a non-zero offset
-                        // so TorBox/debrid CDNs negotiate Range on a fresh redirect chain.
-                        var reconnectUrl = offset > 0 ? redirectUrl : urlForReconnect;
+                        // Always re-resolve through the permalink/redirect URL so TorBox/debrid CDNs negotiate Range on a fresh redirect chain.
+                        var reconnectUrl = redirectUrl;
                         var req = new HttpRequestMessage(HttpMethod.Get, reconnectUrl);
                         req.Headers.Add("Range", $"bytes={offset}-");
                         var resp = await streamHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
@@ -1320,22 +1302,16 @@ public class JfresolveApiController : ControllerBase
                             return (null, null);
                         }
 
-                        if (offset > 0 && reconnectUrl == redirectUrl)
+                        var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, HttpMethod.Get, cancellationToken);
+                        resp.Dispose();
+                        if (redirected == null || !redirected.IsSuccessStatusCode)
                         {
-                            var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, HttpMethod.Get, cancellationToken);
-                            resp.Dispose();
-                            if (redirected == null || !redirected.IsSuccessStatusCode)
-                            {
-                                redirected?.Dispose();
-                                return (null, null);
-                            }
-
-                            var redirectedStream = await redirected.Content.ReadAsStreamAsync();
-                            return (redirectedStream, redirected);
+                            redirected?.Dispose();
+                            return (null, null);
                         }
 
-                        var stream = await resp.Content.ReadAsStreamAsync();
-                        return (stream, resp);
+                        var redirectedStream = await redirected.Content.ReadAsStreamAsync();
+                        return (redirectedStream, redirected);
                     };
                 }
 

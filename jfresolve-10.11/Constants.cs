@@ -47,6 +47,9 @@ public static class Constants
     // Torrentio debrid manifest path parameters
     public const string TorBoxDebridParam = "torbox";
     public const string RealDebridDebridParam = "realdebrid";
+
+    // TorBox API
+    public const int TorBoxApiTimeoutSeconds = 30;
     
     // Limits
     public const int MaxItemsPerQualityDefault = 1;
