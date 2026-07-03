@@ -1343,13 +1343,13 @@ public class JfresolveApiController : ControllerBase
             {
                 if (activeStreamResponse == null || !activeStreamResponse.IsSuccessStatusCode)
                 {
-                    initialResponse?.Dispose();
+                    DisposeIfDifferent(initialResponse, activeStreamResponse);
                     return activeStreamResponse == null
                         ? StatusCode(502, "Failed to connect to stream")
                         : HandleStreamError(activeStreamResponse, redirectUrl, type, id);
                 }
 
-                initialResponse?.Dispose();
+                DisposeIfDifferent(initialResponse, activeStreamResponse);
 
                 var useRangeWorkaround = RequiresClientSideRangeWorkaround(activeStreamResponse, rangeStart, rangeHeader);
 
@@ -1384,7 +1384,7 @@ public class JfresolveApiController : ControllerBase
                 }
 
                 activeStreamResponse = await FollowRedirectsAsync(streamHttpClient, rangeRetryResponse, redirectUrl, 5, upstreamMethod, cancellationToken);
-                    rangeRetryResponse.Dispose();
+                    DisposeIfDifferent(rangeRetryResponse, activeStreamResponse);
 
                     if (activeStreamResponse == null || !activeStreamResponse.IsSuccessStatusCode)
                     {
@@ -1480,7 +1480,7 @@ public class JfresolveApiController : ControllerBase
                         }
 
                         var redirected = await FollowRedirectsAsync(streamHttpClient, resp, redirectUrl, 5, HttpMethod.Get, cancellationToken);
-                        resp.Dispose();
+                        DisposeIfDifferent(resp, redirected);
                         if (redirected == null || !redirected.IsSuccessStatusCode)
                         {
                             redirected?.Dispose();
@@ -2893,6 +2893,14 @@ public class JfresolveApiController : ControllerBase
         }
 
         return false;
+    }
+
+    private static void DisposeIfDifferent(HttpResponseMessage? toDispose, HttpResponseMessage? keepAlive)
+    {
+        if (toDispose != null && !ReferenceEquals(toDispose, keepAlive))
+        {
+            toDispose.Dispose();
+        }
     }
 
     /// <summary>

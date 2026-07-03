@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.77",
+        "changelog": "Fix: ObjectDisposedException when proxying TorBox /dld/ CDN URLs (no redirect). Do not dispose initial HTTP response when it is the same object as the active stream.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.77/jfresolve.zip",
+        "checksum": "5df7909deabf19788f214dee48810953",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:46:00Z"
+      },
+      {
         "version": "1.0.0.76",
         "changelog": "Fix infinite loading: prefer TorBox /dld/ CDN (requestdl redirect=false) over HLS for Jellyfin FFmpeg; TorBox HLS segments report bogus 2GB Content-Length when Range is forwarded — strip Range on .ts proxy.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.76/jfresolve.zip",
