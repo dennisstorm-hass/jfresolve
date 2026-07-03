@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.71",
+        "changelog": "Fix: TorBox seek when createstream fails (HTTP 500). Bump Torrentio limit to 10 for more stream choices, prefer MP4 over MKV for TorBox (falls back to lower quality MP4 if 4K is MKV-only), and retry createstream with alternate auth strategies plus API error body logging.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.71/jfresolve.zip",
+        "checksum": "c196511ce2a71d218222e6785008e197",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T09:55:00Z"
+      },
+      {
         "version": "1.0.0.70",
         "changelog": "Fix: TorBox createstream two-step HLS flow. createstream only returns a token; call getstreamdata to obtain hls_url. Adds diagnostic logging when HLS resolution fails.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.70/jfresolve.zip",

@@ -864,6 +864,8 @@ public class JfresolveApiController : ControllerBase
     /// </summary>
     private string BuildStreamUrl(string manifestBase, string type, string id, string? season, string? episode)
     {
+        manifestBase = UrlBuilder.IncreaseStreamLimit(manifestBase);
+
         // Ensure inputs are sanitized (defense in depth)
         type = SanitizeInput(type);
         id = SanitizeInput(id);
@@ -908,9 +910,11 @@ public class JfresolveApiController : ControllerBase
             // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
             var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
             int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
+            var preferSeekableContainers = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
 
             // Select the stream using failover-adjusted index
-        var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
+        var selectedStream = _qualitySelector.SelectStreamByQuality(
+            streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision, preferSeekableContainers);
             if (selectedStream == null)
             {
                 _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
@@ -961,6 +965,7 @@ public class JfresolveApiController : ControllerBase
         var streamArray = streams.EnumerateArray().ToList();
         var maxAttempts = Math.Min(streamArray.Count, 5); // Limit to 5 attempts to avoid infinite loops
         var attemptedIndices = new HashSet<int>();
+        var preferSeekableContainers = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
         
         for (int attempt = 0; attempt < maxAttempts; attempt++)
         {
@@ -976,7 +981,8 @@ public class JfresolveApiController : ControllerBase
             attemptedIndices.Add(effectiveIndex);
             
             // Select the stream
-            var selectedStream = _qualitySelector.SelectStreamByQuality(streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision);
+            var selectedStream = _qualitySelector.SelectStreamByQuality(
+                streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision, preferSeekableContainers);
             if (selectedStream == null)
             {
                 _logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);

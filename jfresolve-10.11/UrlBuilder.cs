@@ -52,6 +52,24 @@ public static class UrlBuilder
         return $"{normalized}|{paramName}={apiKey}";
     }
 
+    private static readonly Regex StreamLimitPattern = new(
+        @"\|limit=\d+",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Torrentio defaults to limit=1 which hides MP4 alternatives needed for HTTP seek.
+    /// </summary>
+    public static string IncreaseStreamLimit(string? manifestUrl, int minLimit = 10)
+    {
+        if (string.IsNullOrWhiteSpace(manifestUrl))
+            return string.Empty;
+
+        if (StreamLimitPattern.IsMatch(manifestUrl))
+            return StreamLimitPattern.Replace(manifestUrl, $"|limit={minLimit}");
+
+        return $"{manifestUrl.TrimEnd('/')}|limit={minLimit}";
+    }
+
     /// <summary>
     /// Normalizes a Stremio addon manifest URL.
     /// Handles various input formats and returns a clean https:// base URL.

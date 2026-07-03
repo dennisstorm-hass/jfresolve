@@ -196,39 +196,75 @@ public class TorBoxStreamService
     {
         try
         {
-            var createQuery =
-                $"id={Uri.EscapeDataString(torrentId)}" +
-                $"&file_id={Uri.EscapeDataString(fileId)}" +
-                "&type=torrent";
-
-            var createDoc = await SendTorBoxApiGetAsync(
-                $"{TorBoxStreamApi}/createstream?{createQuery}",
-                apiKey,
-                cancellationToken);
-            if (createDoc == null)
+            var attempts = new[]
             {
-                _logger.LogInformation(
-                    "Jfresolve: TorBox createstream failed for torrent {TorrentId} file {FileId}",
-                    torrentId, fileId);
-                return null;
-            }
+                (UseFileId: true, UseBearer: true, Label: "file_id + Bearer"),
+                (UseFileId: true, UseBearer: false, Label: "file_id + token query"),
+                (UseFileId: false, UseBearer: true, Label: "no file_id + Bearer"),
+            };
 
+            foreach (var attempt in attempts)
+            {
+                var hlsUrl = await TryCreateStreamHlsUrlOnceAsync(
+                    apiKey, torrentId, fileId, attempt.UseFileId, attempt.UseBearer, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(hlsUrl))
+                {
+                    _logger.LogInformation(
+                        "Jfresolve: TorBox createstream HLS resolved via {Strategy} for torrent {TorrentId} file {FileId}",
+                        attempt.Label, torrentId, fileId);
+                    return hlsUrl;
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogInformation(
+                ex,
+                "Jfresolve: TorBox createstream/getstreamdata failed for torrent {TorrentId} file {FileId}",
+                torrentId, fileId);
+        }
+
+        return null;
+    }
+
+    private async Task<string?> TryCreateStreamHlsUrlOnceAsync(
+        string apiKey,
+        string torrentId,
+        string fileId,
+        bool useFileId,
+        bool useBearerAuth,
+        CancellationToken cancellationToken)
+    {
+        var createQuery = $"id={Uri.EscapeDataString(torrentId)}&type=torrent";
+        if (useFileId)
+            createQuery += $"&file_id={Uri.EscapeDataString(fileId)}";
+        if (!useBearerAuth)
+            createQuery += $"&token={Uri.EscapeDataString(apiKey)}";
+
+        var createDoc = await SendTorBoxApiGetAsync(
+            $"{TorBoxStreamApi}/createstream?{createQuery}",
+            apiKey,
+            cancellationToken,
+            useBearerAuth);
+        if (createDoc == null)
+            return null;
+
+        using (createDoc)
+        {
             if (!TryGetTorBoxDataObject(createDoc, out var createData))
             {
                 LogTorBoxApiFailure("createstream", createDoc, torrentId, fileId);
                 return null;
             }
 
-            // createstream returns a token used as presigned_token for getstreamdata
+            var directHls = ExtractHlsUrlFromStreamData(createData);
+            if (!string.IsNullOrWhiteSpace(directHls))
+                return directHls;
+
             var presignedToken = GetJsonString(createData, "presigned_token")
                 ?? GetJsonString(createData, "token");
             if (string.IsNullOrWhiteSpace(presignedToken))
             {
-                // Some API versions may return hls_url directly from createstream
-                var directHls = ExtractHlsUrlFromStreamData(createData);
-                if (!string.IsNullOrWhiteSpace(directHls))
-                    return directHls;
-
                 LogTorBoxApiFailure("createstream (no token)", createDoc, torrentId, fileId);
                 return null;
             }
@@ -243,34 +279,19 @@ public class TorBoxStreamService
                 cancellationToken,
                 useBearerAuth: false);
             if (streamDoc == null)
-            {
-                _logger.LogInformation(
-                    "Jfresolve: TorBox getstreamdata failed for torrent {TorrentId} file {FileId}",
-                    torrentId, fileId);
                 return null;
-            }
 
-            if (!TryGetTorBoxDataObject(streamDoc, out var streamData))
+            using (streamDoc)
             {
-                LogTorBoxApiFailure("getstreamdata", streamDoc, torrentId, fileId);
-                return null;
+                if (!TryGetTorBoxDataObject(streamDoc, out var streamData))
+                {
+                    LogTorBoxApiFailure("getstreamdata", streamDoc, torrentId, fileId);
+                    return null;
+                }
+
+                return ExtractHlsUrlFromStreamData(streamData);
             }
-
-            var hlsUrl = ExtractHlsUrlFromStreamData(streamData);
-            if (!string.IsNullOrWhiteSpace(hlsUrl))
-                return hlsUrl;
-
-            LogTorBoxApiFailure("getstreamdata (no hls_url)", streamDoc, torrentId, fileId);
         }
-        catch (Exception ex)
-        {
-            _logger.LogInformation(
-                ex,
-                "Jfresolve: TorBox createstream/getstreamdata failed for torrent {TorrentId} file {FileId}",
-                torrentId, fileId);
-        }
-
-        return null;
     }
 
     private async Task<JsonDocument?> SendTorBoxApiGetAsync(
@@ -290,9 +311,22 @@ public class TorBoxStreamService
         using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
         if (!response.IsSuccessStatusCode)
         {
+            var errorBody = string.Empty;
+            try
+            {
+                errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+            }
+            catch
+            {
+                // ignore read failures
+            }
+
+            var path = Uri.TryCreate(url, UriKind.Absolute, out var uri) ? uri.AbsolutePath : url;
             _logger.LogInformation(
-                "Jfresolve: TorBox API {Url} returned HTTP {Status}",
-                url.Split('?')[0], (int)response.StatusCode);
+                "Jfresolve: TorBox API {Path} returned HTTP {Status}: {Body}",
+                path,
+                (int)response.StatusCode,
+                TruncateForLog(errorBody, 400));
             return null;
         }
 
@@ -378,6 +412,14 @@ public class TorBoxStreamService
         }
 
         return null;
+    }
+
+    private static string TruncateForLog(string value, int maxLength)
+    {
+        if (string.IsNullOrEmpty(value) || value.Length <= maxLength)
+            return value;
+
+        return value[..maxLength] + "...";
     }
 
     private static bool TryGetTorrentHash(JsonElement torrent, out string hash)
