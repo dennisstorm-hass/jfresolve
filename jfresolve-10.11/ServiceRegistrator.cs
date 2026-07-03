@@ -41,6 +41,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<ImageResourceFilter>();
         services.AddSingleton<DeleteResourceFilter>();
         services.AddSingleton<ItemDtoFilter>();
+        services.AddSingleton<StreamingSeekCaptureFilter>();
 
         // Register scheduled tasks
         // Register concrete tasks so they can be resolved directly from RequestServices where needed.
@@ -103,6 +104,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
             options.Filters.AddService<ImageResourceFilter>(order: 4);
             options.Filters.AddService<DeleteResourceFilter>(order: 5);
             options.Filters.AddService<ItemDtoFilter>(order: 10);
+            options.Filters.AddService<StreamingSeekCaptureFilter>(order: 0);
         });
     }
 }

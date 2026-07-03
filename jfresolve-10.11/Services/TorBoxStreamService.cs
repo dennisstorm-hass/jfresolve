@@ -59,6 +59,7 @@ public class TorBoxStreamService
         string streamUrl,
         string? torBoxApiKey,
         bool preferHlsForSeek = false,
+        bool forceHls = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(streamUrl) || string.IsNullOrWhiteSpace(torBoxApiKey))
@@ -77,7 +78,7 @@ public class TorBoxStreamService
                 requestDlRef = new TorrentRef(requestDlTorrentId, requestDlFileId);
 
             return await ResolveTorBoxPlaybackAsync(
-                torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, preferHlsForSeek, cancellationToken);
+                torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, preferHlsForSeek, forceHls, cancellationToken);
         }
 
         if (!TryParseTorrentioTorBoxUrl(streamUrl, out var infoHash, out var fileIndex))
@@ -98,7 +99,7 @@ public class TorBoxStreamService
         }
 
         return await ResolveTorBoxPlaybackAsync(
-            torBoxApiKey, torrentRef, infoHash, fileIndex, streamUrl, preferHlsForSeek, cancellationToken);
+            torBoxApiKey, torrentRef, infoHash, fileIndex, streamUrl, preferHlsForSeek, forceHls, cancellationToken);
     }
 
     private async Task<TorBoxStreamTarget?> ResolveTorBoxPlaybackAsync(
@@ -108,11 +109,12 @@ public class TorBoxStreamService
         int? fileIndex,
         string fallbackStreamUrl,
         bool preferHlsForSeek,
+        bool forceHls,
         CancellationToken cancellationToken)
     {
         if (torrentRef.HasValue)
         {
-            if (preferHlsForSeek)
+            if (forceHls || preferHlsForSeek)
             {
                 var hlsPlayback = await TryCreateStreamPlaybackAsync(
                     torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
@@ -127,7 +129,7 @@ public class TorBoxStreamService
                 }
             }
 
-            if (!preferHlsForSeek)
+            if (!forceHls && !preferHlsForSeek)
             {
                 var directCdn = await TryGetDirectDownloadCdnUrlAsync(
                     torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);

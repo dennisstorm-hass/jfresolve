@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.80",
+        "changelog": "Fix TorBox seek desync: redirect FFmpeg to /stream.m3u8 on seek so HLS demuxer is used; track active byte transfers for earlier seek detection; capture startTimeTicks from any Jellyfin API request.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.80/jfresolve.zip",
+        "checksum": "9584c16a11856b7731f76306b712edd4",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T12:00:00Z"
+      },
+      {
         "version": "1.0.0.79",
         "changelog": "Fix TorBox HLS seek: rewrite playlist with direct tb-cdn segment URLs for FFmpeg (no hlsSeg proxy); remember HLS session for subsequent seeks.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.79/jfresolve.zip",

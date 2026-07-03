@@ -256,6 +256,8 @@ public class JfresolveApiController : ControllerBase
     /// <returns>Proxied stream or error</returns>
     [HttpGet("resolve/{type}/{id}")]
     [HttpHead("resolve/{type}/{id}")]
+    [HttpGet("resolve/{type}/{id}/stream.m3u8")]
+    [HttpHead("resolve/{type}/{id}/stream.m3u8")]
     [AllowAnonymous] // FFmpeg needs to access this endpoint without authentication
     public async Task<IActionResult> ResolveStream(
         string type,
@@ -267,8 +269,7 @@ public class JfresolveApiController : ControllerBase
         [FromQuery] string? hlsSeg = null,
         [FromQuery] Guid? userId = null)
     {
-        // Resolve endpoint is intentionally open for FFmpeg/probe compatibility.
-        // Jellyfin calls this endpoint from multiple contexts where auth/session headers may be absent.
+        var forceHls = Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true;
 
         // Validate and sanitize inputs
         var validationResult = ValidateAndSanitizeResolveStreamInputs(type, id, season, episode, quality, index);
@@ -331,6 +332,22 @@ public class JfresolveApiController : ControllerBase
             return NotFound("Addon manifest URL not configured. Please configure it in plugin settings.");
         }
 
+        var isHlsPath = Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true;
+        if (!isHlsPath
+            && !string.IsNullOrWhiteSpace(config.TorBoxApiKey)
+            && DetectTorBoxSeekHls(type, id))
+        {
+            SeekPositionCache.MarkSeekRestart();
+            forceHls = true;
+            _logger.LogInformation(
+                "Jfresolve: Seek detected for {Type}/{Id} — redirecting FFmpeg to HLS resolve path",
+                type, id);
+            return RedirectToStreamM3u8Path(type, id);
+        }
+
+        if (forceHls)
+            SeekPositionCache.MarkSeekRestart();
+
         // Per-user preference: use user's setting when userId is present, otherwise global default
         var preferHdrOverDolbyVision = config.PreferHdrOverDolbyVision;
         if (userId.HasValue)
@@ -346,7 +363,7 @@ public class JfresolveApiController : ControllerBase
         try
         {
             // Resolve the redirect URL (from cache or by fetching from addon)
-            var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config, preferHdrOverDolbyVision, userId);
+            var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config, preferHdrOverDolbyVision, userId, forceHls);
             
             if (string.IsNullOrWhiteSpace(redirectUrl))
             {
@@ -527,7 +544,8 @@ public class JfresolveApiController : ControllerBase
         string type, string id, string? season, string? episode, string? quality, int? index,
         Configuration.PluginConfiguration config,
         bool preferHdrOverDolbyVision,
-        Guid? userId = null)
+        Guid? userId = null,
+        bool forceHls = false)
     {
         // Validate series parameters
         if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
@@ -555,7 +573,7 @@ public class JfresolveApiController : ControllerBase
             _logger.LogDebug("Jfresolve: Using cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
                 type, id, season ?? "N/A", episode ?? "N/A");
             return await NormalizeStreamUpstreamUrlAsync(
-                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id);
+                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id, forceHls);
         }
 
         // Get streams from addon (returns JsonDocument that must be kept alive)
@@ -586,7 +604,7 @@ public class JfresolveApiController : ControllerBase
                 }
 
                 redirectUrl = await NormalizeStreamUpstreamUrlAsync(
-                    redirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id);
+                    redirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id, forceHls);
             }
 
             return redirectUrl;
@@ -1091,21 +1109,80 @@ public class JfresolveApiController : ControllerBase
         string? torBoxApiKey,
         CancellationToken cancellationToken,
         string? type = null,
-        string? id = null)
+        string? id = null,
+        bool forceHls = false)
     {
         if (string.IsNullOrWhiteSpace(redirectUrl))
             return redirectUrl;
 
-        var preferHlsForSeek = !string.IsNullOrWhiteSpace(type)
-            && !string.IsNullOrWhiteSpace(id)
-            && ShouldPreferHlsForSeek(type, id);
+        var preferHlsForSeek = forceHls
+            || (!string.IsNullOrWhiteSpace(type)
+                && !string.IsNullOrWhiteSpace(id)
+                && ShouldPreferHlsForSeek(type, id));
+
+        if (forceHls)
+        {
+            _logger.LogInformation("Jfresolve: Forcing TorBox HLS delivery for {Type}/{Id}", type, id);
+        }
 
         var target = await _torBoxStreamService.TryResolveTorBoxStreamAsync(
-            redirectUrl, torBoxApiKey, preferHlsForSeek, cancellationToken);
+            redirectUrl, torBoxApiKey, preferHlsForSeek, forceHls, cancellationToken);
         return target?.Url ?? redirectUrl;
     }
 
+    private static readonly ConcurrentDictionary<string, (DateTime Started, long Bytes)> _activeStreamTransfers = new();
+
     private static string BuildStreamSessionKey(string type, string id) => $"{type}/{id}";
+
+    private static void BeginStreamTransfer(string type, string id)
+    {
+        _activeStreamTransfers[BuildStreamSessionKey(type, id)] = (DateTime.UtcNow, 0);
+    }
+
+    private static void UpdateStreamTransfer(string type, string id, long bytesWritten)
+    {
+        var key = BuildStreamSessionKey(type, id);
+        _activeStreamTransfers.AddOrUpdate(
+            key,
+            (DateTime.UtcNow, bytesWritten),
+            (_, existing) => (existing.Started, bytesWritten));
+    }
+
+    private static void EndStreamTransfer(string type, string id)
+    {
+        _activeStreamTransfers.TryRemove(BuildStreamSessionKey(type, id), out _);
+    }
+
+    private bool DetectTorBoxSeekHls(string type, string id)
+    {
+        if (SeekPositionCache.ShouldUseHlsPath())
+            return true;
+
+        var key = BuildStreamSessionKey(type, id);
+        if (_activeHlsPlayback.TryGetValue(key, out var hlsStartedAt)
+            && DateTime.UtcNow - hlsStartedAt <= HlsPlaybackSessionWindow)
+        {
+            return true;
+        }
+
+        if (_recentPlaybackDisconnects.TryGetValue(key, out var disconnectedAt)
+            && DateTime.UtcNow - disconnectedAt <= SeekDetectionWindow)
+        {
+            return true;
+        }
+
+        return _activeStreamTransfers.TryGetValue(key, out var state)
+            && state.Bytes >= SeekDetectionMinBytes
+            && DateTime.UtcNow - state.Started < TimeSpan.FromHours(4);
+    }
+
+    private IActionResult RedirectToStreamM3u8Path(string type, string id)
+    {
+        var path = $"/Plugins/Jfresolve/resolve/{type}/{id}/stream.m3u8";
+        var query = Request.QueryString.HasValue ? Request.QueryString.Value : string.Empty;
+        var target = path + query;
+        return Redirect(target);
+    }
 
     private static void MarkRecentPlaybackDisconnect(string type, string id, long bytesWritten)
     {
@@ -1113,10 +1190,14 @@ public class JfresolveApiController : ControllerBase
             return;
 
         _recentPlaybackDisconnects[BuildStreamSessionKey(type, id)] = DateTime.UtcNow;
+        SeekPositionCache.MarkSeekRestart();
     }
 
     private bool ShouldPreferHlsForSeek(string type, string id)
     {
+        if (!DetectTorBoxSeekHls(type, id))
+            return false;
+
         var key = BuildStreamSessionKey(type, id);
         if (_activeHlsPlayback.TryGetValue(key, out var hlsStartedAt)
             && DateTime.UtcNow - hlsStartedAt <= HlsPlaybackSessionWindow)
@@ -1127,19 +1208,23 @@ public class JfresolveApiController : ControllerBase
             return true;
         }
 
-        if (!_recentPlaybackDisconnects.TryGetValue(key, out var disconnectedAt))
-            return false;
-
-        if (DateTime.UtcNow - disconnectedAt > SeekDetectionWindow)
+        if (_recentPlaybackDisconnects.ContainsKey(key))
         {
+            _logger.LogInformation(
+                "Jfresolve: Recent playback disconnect for {Key} — using TorBox HLS for seek",
+                key);
             _recentPlaybackDisconnects.TryRemove(key, out _);
-            return false;
+            return true;
         }
 
-        _logger.LogInformation(
-            "Jfresolve: Recent playback disconnect for {Key} — using TorBox HLS for seek",
-            key);
-        _recentPlaybackDisconnects.TryRemove(key, out _);
+        if (_activeStreamTransfers.TryGetValue(key, out var state) && state.Bytes >= SeekDetectionMinBytes)
+        {
+            _logger.LogInformation(
+                "Jfresolve: Active stream transfer for {Key} (~{Bytes} bytes) — using TorBox HLS for seek",
+                key, state.Bytes);
+            return true;
+        }
+
         return true;
     }
 
@@ -1300,6 +1385,14 @@ public class JfresolveApiController : ControllerBase
         if (useDirectSegmentUrls)
         {
             MarkActiveHlsPlayback(type, id);
+            var seekTicks = SeekPositionCache.TryConsumePending();
+            if (seekTicks.HasValue)
+            {
+                _logger.LogInformation(
+                    "Jfresolve: TorBox HLS seek target {Seconds:F1}s for {Type}/{Id}",
+                    seekTicks.Value / 10_000_000.0, type, id);
+            }
+
             _logger.LogInformation(
                 "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
                 type, id);
@@ -1333,6 +1426,9 @@ public class JfresolveApiController : ControllerBase
             try
             {
                 _logger.LogInformation("Jfresolve: Proxying stream from {RedirectUrl}", redirectUrl);
+
+                if (!headOnly)
+                    BeginStreamTransfer(type, id);
                 
             // Disable response buffering for optimal streaming performance
             SetResponseHeaderValue("Cache-Control", Constants.CacheControlNoCache);
@@ -1860,6 +1956,8 @@ public class JfresolveApiController : ControllerBase
                     {
                         await Response.Body.WriteAsync(buffer.AsMemory(0, bytesRead), cancellationToken);
                         totalBytesWritten += bytesRead;
+                        if (totalBytesWritten % (10 * 1024 * 1024) < bytesRead)
+                            UpdateStreamTransfer(type, id, totalBytesWritten);
                         bufferCount++;
                         bool inPostSeekWindow = rangeStart.HasValue && totalBytesWritten < Constants.StreamFlushEveryBufferUntilBytesAfterSeek;
                         if (inPostSeekWindow || bufferCount == 1 || bufferCount % flushInterval == 0)
@@ -1934,6 +2032,8 @@ public class JfresolveApiController : ControllerBase
         }
         finally
         {
+            UpdateStreamTransfer(type, id, totalBytesWritten);
+            EndStreamTransfer(type, id);
             reconnectResponseToDispose?.Dispose();
         }
     }

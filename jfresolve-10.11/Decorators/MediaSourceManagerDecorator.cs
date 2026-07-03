@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using Jellyfin.Data;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
+using Jfresolve.Services;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.IO;
@@ -262,11 +263,19 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         {
             foreach (var info in sources)
             {
+                ApplySeekHlsPath(info);
                 if (!string.IsNullOrEmpty(info.Path) && info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
                 {
                     var sep = info.Path.IndexOf('?') >= 0 ? "&" : "?";
                     info.Path += $"{sep}userId={user.Id:N}";
                 }
+            }
+        }
+        else
+        {
+            foreach (var info in sources)
+            {
+                ApplySeekHlsPath(info);
             }
         }
 
@@ -537,7 +546,38 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.IsRemote = true;
         // Don't force transcoding - let Jellyfin decide based on codec compatibility, client capabilities, etc.
         // SupportsDirectPlay, SupportsDirectStream, and SupportsTranscoding will be determined by Jellyfin
+
+        // Probed MKV container breaks TorBox HLS seek — let FFmpeg sniff the actual delivery per request.
+        var config = JfresolvePlugin.Instance?.Configuration;
+        if (!string.IsNullOrWhiteSpace(config?.TorBoxApiKey))
+        {
+            info.Container = null;
+        }
+
         ApplyEstimatedSize(info);
+    }
+
+    /// <summary>
+    /// When Jellyfin is about to restart FFmpeg for a seek, point at stream.m3u8 so the HLS demuxer is used.
+    /// </summary>
+    private void ApplySeekHlsPath(MediaSourceInfo info)
+    {
+        if (string.IsNullOrEmpty(info.Path)
+            || !info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
+            || info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        if (!SeekPositionCache.ShouldUseHlsPath())
+            return;
+
+        var queryIndex = info.Path.IndexOf('?');
+        var pathOnly = queryIndex >= 0 ? info.Path[..queryIndex] : info.Path;
+        var query = queryIndex >= 0 ? info.Path[queryIndex..] : string.Empty;
+        info.Path = $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
+        info.Container = "m3u8";
+        _log.LogInformation("Jfresolve: Switched media path to HLS for pending seek: {Path}", info.Path);
     }
 
     /// <summary>
@@ -613,6 +653,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             }
             
             ApplyTrick(source);
+            ApplySeekHlsPath(source);
         }
         
         return source;
