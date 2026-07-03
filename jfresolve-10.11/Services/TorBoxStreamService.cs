@@ -110,13 +110,26 @@ public class TorBoxStreamService
     {
         if (torrentRef.HasValue)
         {
-            var playback = await TryCreateStreamPlaybackAsync(
+            // /dld/ CDN from requestdl?redirect=false — single MKV file, works with Jellyfin FFmpeg (seek via -ss before -i).
+            var directCdn = await TryGetDirectDownloadCdnUrlAsync(
                 torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
-            if (playback.HasValue)
+            if (!string.IsNullOrWhiteSpace(directCdn))
             {
                 _logger.LogInformation(
-                    "Jfresolve: Using TorBox createstream {Kind} for torrent {TorrentId} file {FileId}{HashSuffix}",
-                    playback.Value.Kind == TorBoxDeliveryKind.Hls ? "HLS" : "CDN",
+                    "Jfresolve: Using TorBox /dld/ CDN for torrent {TorrentId} file {FileId}{HashSuffix} (host={Host})",
+                    torrentRef.Value.TorrentId,
+                    torrentRef.Value.FileId,
+                    string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
+                    Uri.TryCreate(directCdn, UriKind.Absolute, out var cdnUri) ? cdnUri.Host : "unknown");
+                return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directCdn);
+            }
+
+            var playback = await TryCreateStreamPlaybackAsync(
+                torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
+            if (playback.HasValue && playback.Value.Kind == TorBoxDeliveryKind.Hls)
+            {
+                _logger.LogInformation(
+                    "Jfresolve: Using TorBox createstream HLS for torrent {TorrentId} file {FileId}{HashSuffix}",
                     torrentRef.Value.TorrentId,
                     torrentRef.Value.FileId,
                     string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}");
@@ -126,7 +139,7 @@ public class TorBoxStreamService
             var permalink = BuildRequestDlPermalink(
                 torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId);
             _logger.LogInformation(
-                "Jfresolve: TorBox createstream unavailable for torrent {TorrentId} file {FileId}, using requestdl fallback{HashSuffix}",
+                "Jfresolve: TorBox /dld/ and createstream unavailable for torrent {TorrentId} file {FileId}, using requestdl fallback{HashSuffix}",
                 torrentRef.Value.TorrentId,
                 torrentRef.Value.FileId,
                 string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" (hash {infoHash})");
@@ -159,6 +172,19 @@ public class TorBoxStreamService
             || url.Contains("real-debrid.com", StringComparison.OrdinalIgnoreCase)
             || url.Contains("torrentio.strem.fun/resolve/", StringComparison.OrdinalIgnoreCase);
     }
+
+    public static bool IsHlsSegmentUrl(string url) =>
+        !string.IsNullOrWhiteSpace(url) &&
+        !IsHlsUrl(url) &&
+        url.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase) &&
+        (url.Contains(".ts", StringComparison.OrdinalIgnoreCase)
+         || url.Contains(".m4s", StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>
+    /// TorBox flux CDN reports 2147483256 (2^31-8) as a bogus segment length when Range is used.
+    /// </summary>
+    public static bool IsSuspectUpstreamContentLength(long? length) =>
+        length is 2147483256 or 2147483647 or > 600_000_000;
 
     public static bool IsTorBoxRequestDlPermalink(string url)
     {
@@ -702,6 +728,57 @@ public class TorBoxStreamService
         }
 
         return fileIndex.ToString();
+    }
+
+    /// <summary>
+    /// GET /v1/api/torrents/requestdl?redirect=false returns a short-lived /dld/ CDN URL (verified live API).
+    /// </summary>
+    private async Task<string?> TryGetDirectDownloadCdnUrlAsync(
+        string apiKey,
+        string torrentId,
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var query =
+                $"token={Uri.EscapeDataString(apiKey)}" +
+                $"&torrent_id={Uri.EscapeDataString(torrentId)}" +
+                $"&file_id={Uri.EscapeDataString(fileId)}" +
+                "&redirect=false";
+
+            using var doc = await SendTorBoxApiGetAsync(
+                $"{TorBoxTorrentsApi}/requestdl?{query}",
+                apiKey,
+                cancellationToken,
+                useBearerAuth: false);
+            if (doc == null)
+                return null;
+
+            var root = doc.RootElement;
+            if (root.TryGetProperty("success", out var successProp) &&
+                successProp.ValueKind == JsonValueKind.False)
+            {
+                return null;
+            }
+
+            if (!root.TryGetProperty("data", out var data))
+                return null;
+
+            var cdnUrl = data.ValueKind == JsonValueKind.String ? data.GetString() : null;
+            if (string.IsNullOrWhiteSpace(cdnUrl) || !IsTorBoxStreamCdnUrl(cdnUrl))
+                return null;
+
+            return cdnUrl;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogInformation(
+                ex,
+                "Jfresolve: TorBox requestdl redirect=false failed for torrent {TorrentId} file {FileId}",
+                torrentId, fileId);
+            return null;
+        }
     }
 
     private static string BuildRequestDlPermalink(string apiKey, string torrentId, string fileId)

@@ -345,12 +345,8 @@ public class JfresolveApiController : ControllerBase
                 return NotFound("No suitable stream found");
             }
 
-            // Proxy the stream (HEAD returns headers only — FFmpeg/ffprobe use this for Content-Length)
+            // ResolveRedirectUrlAsync already normalizes TorBox URLs to /dld/ CDN or HLS.
             var headOnly = HttpMethods.IsHead(Request.Method);
-            redirectUrl = await NormalizeStreamUpstreamUrlAsync(
-                redirectUrl,
-                GetPluginConfiguration()?.TorBoxApiKey,
-                HttpContext.RequestAborted);
             return await ProxyStreamAsync(redirectUrl, type, id, headOnly, userId);
         }
         catch (HttpRequestException ex)
@@ -1261,6 +1257,14 @@ public class JfresolveApiController : ControllerBase
                 var rangeInfo = ParseRangeInfo(rangeHeader);
                 long? rangeStart = rangeInfo.Start;
 
+                // TorBox HLS segments return bogus 2GB Content-Length when Range is forwarded.
+                if (TorBoxStreamService.IsHlsSegmentUrl(redirectUrl))
+                {
+                    rangeHeader = null;
+                    rangeStart = null;
+                    rangeInfo = default;
+                }
+
                 if (!string.IsNullOrEmpty(rangeHeader))
                 {
                     _logger.LogDebug("Jfresolve: Range request detected: {Range} (suffix={Suffix}, start={Start})",
@@ -1637,7 +1641,17 @@ public class JfresolveApiController : ControllerBase
             if (streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent &&
                 streamResponse.Content.Headers.ContentLength.HasValue)
             {
-                Response.ContentLength = streamResponse.Content.Headers.ContentLength.Value;
+                var upstreamLength = streamResponse.Content.Headers.ContentLength.Value;
+                if (!TorBoxStreamService.IsSuspectUpstreamContentLength(upstreamLength))
+                {
+                    Response.ContentLength = upstreamLength;
+                }
+                else
+                {
+                    _logger.LogDebug(
+                        "Jfresolve: Omitting suspect upstream Content-Length {Length} for segment proxy",
+                        upstreamLength);
+                }
             }
             else if (streamResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {

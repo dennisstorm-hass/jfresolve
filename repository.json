@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.76",
+        "changelog": "Fix infinite loading: prefer TorBox /dld/ CDN (requestdl redirect=false) over HLS for Jellyfin FFmpeg; TorBox HLS segments report bogus 2GB Content-Length when Range is forwarded — strip Range on .ts proxy.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.76/jfresolve.zip",
+        "checksum": "1f966fad76e7729b272ae1933ce4dbb5",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:40:00Z"
+      },
+      {
         "version": "1.0.0.75",
         "changelog": "Fix: TorBox seek — always call createstream before requestdl. Parse torrent_id from Torrentio redirect when mylist misses; upgrade cached requestdl URLs; cache raw addon URLs only and re-normalize every request.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.75/jfresolve.zip",
