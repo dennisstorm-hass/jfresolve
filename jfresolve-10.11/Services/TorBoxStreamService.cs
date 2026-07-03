@@ -47,6 +47,7 @@ public class TorBoxStreamService
 
     public static bool IsTorBoxStreamCdnUrl(string url) =>
         !string.IsNullOrWhiteSpace(url) &&
+        !IsHlsUrl(url) &&
         (url.Contains("/dld/", StringComparison.OrdinalIgnoreCase)
          || url.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase));
 
@@ -201,6 +202,11 @@ public class TorBoxStreamService
         return null;
     }
 
+    /// <summary>
+    /// TorBox createstream (verified against live API): returns data.hls_url on tb-cdn.io immediately,
+    /// even when needs_transcoding is true. Optional presigned_token for getstreamdata polling.
+    /// See https://api-docs.torbox.app/ — GET /v1/api/stream/createstream
+    /// </summary>
     private async Task<TorBoxStreamTarget?> TryCreateStreamPlaybackAsync(
         string apiKey,
         string torrentId,
@@ -209,72 +215,51 @@ public class TorBoxStreamService
     {
         try
         {
-            const int maxCreateAttempts = 4;
-            for (var attempt = 1; attempt <= maxCreateAttempts; attempt++)
+            const int maxAttempts = 3;
+            for (var attempt = 1; attempt <= maxAttempts; attempt++)
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                var discovery = await CallCreateStreamAsync(
+                var created = await CallCreateStreamAsync(
                     apiKey, torrentId, fileId, chosenAudioIndex: 0, chosenSubtitleIndex: null, cancellationToken);
-                if (discovery == null)
+                if (created == null)
                 {
-                    if (attempt < maxCreateAttempts)
+                    if (attempt < maxAttempts)
                     {
                         _logger.LogInformation(
-                            "Jfresolve: TorBox createstream attempt {Attempt}/{Max} failed for torrent {TorrentId}, retrying in 3s",
-                            attempt, maxCreateAttempts, torrentId);
-                        await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
-                        continue;
+                            "Jfresolve: TorBox createstream HTTP error for torrent {TorrentId}, retry {Attempt}/{Max} in 2s",
+                            torrentId, attempt, maxAttempts);
+                        await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
                     }
 
-                    return null;
+                    continue;
                 }
 
-                var streamResult = discovery.Value;
-                var audioIndex = streamResult.AudioIndex;
-                var playback = streamResult.Playback;
-                var presignedToken = streamResult.PresignedToken;
+                var streamResult = created.Value;
 
-                if (!playback.HasValue || streamResult.NeedsTranscoding)
+                // Live API: hls_url is present on first createstream response — do not discard when needs_transcoding=true.
+                if (streamResult.Playback.HasValue)
                 {
-                    var finalized = await CallCreateStreamAsync(
-                        apiKey, torrentId, fileId, audioIndex, chosenSubtitleIndex: null, cancellationToken);
-                    if (finalized != null)
+                    LogPlaybackResolved("createstream", streamResult.Playback.Value, torrentId, fileId, attempt);
+                    return streamResult.Playback.Value;
+                }
+
+                if (!string.IsNullOrWhiteSpace(streamResult.PresignedToken))
+                {
+                    var fromPoll = await PollGetStreamDataPlaybackAsync(
+                        apiKey, streamResult.PresignedToken, streamResult.AudioIndex, streamResult, cancellationToken);
+                    if (fromPoll.HasValue)
                     {
-                        streamResult = finalized.Value;
-                        playback = streamResult.Playback ?? playback;
-                        presignedToken = streamResult.PresignedToken ?? presignedToken;
-                        audioIndex = streamResult.AudioIndex;
+                        LogPlaybackResolved("getstreamdata", fromPoll.Value, torrentId, fileId, attempt);
+                        return fromPoll.Value;
                     }
                 }
 
-                if (playback.HasValue)
+                if (attempt < maxAttempts)
                 {
                     _logger.LogInformation(
-                        "Jfresolve: TorBox createstream returned {Kind} URL for torrent {TorrentId} (attempt {Attempt})",
-                        playback.Value.Kind == TorBoxDeliveryKind.Hls ? "HLS" : "CDN",
-                        torrentId, attempt);
-                    return playback.Value;
-                }
-
-                if (!string.IsNullOrWhiteSpace(presignedToken))
-                {
-                    playback = await PollGetStreamDataPlaybackAsync(apiKey, presignedToken, audioIndex, streamResult, cancellationToken);
-                    if (playback.HasValue)
-                    {
-                        _logger.LogInformation(
-                            "Jfresolve: TorBox getstreamdata returned {Kind} URL for torrent {TorrentId} (attempt {Attempt})",
-                            playback.Value.Kind == TorBoxDeliveryKind.Hls ? "HLS" : "CDN",
-                            torrentId, attempt);
-                        return playback.Value;
-                    }
-                }
-
-                if (attempt < maxCreateAttempts)
-                {
-                    _logger.LogInformation(
-                        "Jfresolve: TorBox stream not ready for torrent {TorrentId}, retrying createstream in 3s ({Attempt}/{Max})",
-                        torrentId, attempt, maxCreateAttempts);
+                        "Jfresolve: TorBox stream not ready for torrent {TorrentId} file {FileId}, retry {Attempt}/{Max} in 3s (needs_transcoding={NeedsTranscoding})",
+                        torrentId, fileId, attempt, maxAttempts, streamResult.NeedsTranscoding);
                     await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
                 }
             }
@@ -288,6 +273,24 @@ public class TorBoxStreamService
         }
 
         return null;
+    }
+
+    private void LogPlaybackResolved(
+        string step,
+        TorBoxStreamTarget target,
+        string torrentId,
+        string fileId,
+        int attempt)
+    {
+        var host = Uri.TryCreate(target.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
+        _logger.LogInformation(
+            "Jfresolve: TorBox {Step} returned {Kind} playback for torrent {TorrentId} file {FileId} (host={Host}, attempt {Attempt})",
+            step,
+            target.Kind == TorBoxDeliveryKind.Hls ? "HLS" : "CDN",
+            torrentId,
+            fileId,
+            host,
+            attempt);
     }
 
     private readonly record struct CreateStreamResult(
@@ -387,11 +390,13 @@ public class TorBoxStreamService
         CreateStreamResult initial,
         CancellationToken cancellationToken)
     {
-        const int maxPolls = 20;
-        var pollDelay = initial.NeedsTranscoding || initial.IsTranscoding
-            ? TimeSpan.FromSeconds(3)
-            : TimeSpan.FromSeconds(1);
+        // Only poll when createstream returned a token but no hls_url yet.
+        if (!initial.NeedsTranscoding && !initial.IsTranscoding)
+        {
+            return await FetchGetStreamDataPlaybackAsync(apiKey, presignedToken, audioIndex, cancellationToken);
+        }
 
+        const int maxPolls = 15;
         for (var poll = 0; poll < maxPolls; poll++)
         {
             cancellationToken.ThrowIfCancellationRequested();
@@ -400,16 +405,7 @@ public class TorBoxStreamService
             if (playback.HasValue)
                 return playback;
 
-            if (!initial.NeedsTranscoding && !initial.IsTranscoding)
-                break;
-
-            _logger.LogDebug(
-                "Jfresolve: TorBox stream transcoding in progress for token {TokenPrefix}..., poll {Poll}/{Max}",
-                presignedToken.Length > 8 ? presignedToken[..8] : presignedToken,
-                poll + 1,
-                maxPolls);
-
-            await Task.Delay(pollDelay, cancellationToken);
+            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
         }
 
         return null;
@@ -527,15 +523,16 @@ public class TorBoxStreamService
 
     private static TorBoxStreamTarget? ExtractPlaybackTargetFromStreamData(JsonElement data)
     {
-        foreach (var url in CollectStreamUrls(data))
-        {
-            if (IsTorBoxStreamCdnUrl(url))
-                return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, url);
-        }
-
+        // Verified live API: createstream/getstreamdata always expose data.hls_url for seekable playback.
         var hlsUrl = GetJsonString(data, "hls_url");
         if (!string.IsNullOrWhiteSpace(hlsUrl))
             return new TorBoxStreamTarget(TorBoxDeliveryKind.Hls, hlsUrl);
+
+        foreach (var url in CollectStreamUrls(data))
+        {
+            if (url.Contains("/dld/", StringComparison.OrdinalIgnoreCase))
+                return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, url);
+        }
 
         foreach (var url in CollectStreamUrls(data))
         {

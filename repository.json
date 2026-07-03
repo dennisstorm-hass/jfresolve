@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.74",
+        "changelog": "Fix: TorBox createstream verified against live API. Use hls_url immediately when present (even if needs_transcoding=true); stop re-calling createstream and discarding HLS. Matches api.torbox.app createstream/getstreamdata contract.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.74/jfresolve.zip",
+        "checksum": "c9c313de99b724961ccc34a529dcd5a2",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:22:00Z"
+      },
+      {
         "version": "1.0.0.73",
         "changelog": "Fix: Use TorBox createstream CDN /dld/ URLs (tb-cdn.io) like the TorBox web player. Prefer seekable CDN direct URLs from createstream/getstreamdata over requestdl MKV; HLS remains fallback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.73/jfresolve.zip",
