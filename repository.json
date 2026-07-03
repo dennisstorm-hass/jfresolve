@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.64",
+        "changelog": "Debrid providers: TorBox primary and RealDebrid fallback via runtime manifest URL injection. Admin page fields for TorBox and RealDebrid API keys. /test endpoint reports debrid configuration status.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.64/jfresolve.zip",
+        "checksum": "5df1308ac5973fad00c1494223b314f6",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T06:17:00Z"
+      },
+      {
         "version": "1.0.0.47",
         "changelog": "Fix: NullReferenceException in GetPlaybackMediaSources when user is null (e.g. HLS/transcode requests). Guard so userId is only appended to Path when user is non-null.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.47/jfresolve.zip",
