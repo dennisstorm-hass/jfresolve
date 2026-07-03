@@ -68,6 +68,11 @@ public class JfresolveApiController : ControllerBase
     // Upstream total file size cache (needed for FFmpeg MKV byte seeks when headers omit Content-Length)
     private static readonly ConcurrentDictionary<string, (long ContentLength, DateTime Expiry)> _upstreamContentLengthCache = new();
 
+    // Recent FFmpeg disconnects (seek restarts stop the prior download mid-stream).
+    private static readonly ConcurrentDictionary<string, DateTime> _recentPlaybackDisconnects = new();
+    private const long SeekDetectionMinBytes = 50_000_000;
+    private static readonly TimeSpan SeekDetectionWindow = TimeSpan.FromSeconds(20);
+
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
         ILogger<JfresolveApiController> logger,
@@ -547,7 +552,7 @@ public class JfresolveApiController : ControllerBase
             _logger.LogDebug("Jfresolve: Using cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
                 type, id, season ?? "N/A", episode ?? "N/A");
             return await NormalizeStreamUpstreamUrlAsync(
-                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None);
+                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id);
         }
 
         // Get streams from addon (returns JsonDocument that must be kept alive)
@@ -578,7 +583,7 @@ public class JfresolveApiController : ControllerBase
                 }
 
                 redirectUrl = await NormalizeStreamUpstreamUrlAsync(
-                    redirectUrl, config.TorBoxApiKey, CancellationToken.None);
+                    redirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id);
             }
 
             return redirectUrl;
@@ -1081,14 +1086,49 @@ public class JfresolveApiController : ControllerBase
     private async Task<string> NormalizeStreamUpstreamUrlAsync(
         string redirectUrl,
         string? torBoxApiKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        string? type = null,
+        string? id = null)
     {
         if (string.IsNullOrWhiteSpace(redirectUrl))
             return redirectUrl;
 
+        var preferHlsForSeek = !string.IsNullOrWhiteSpace(type)
+            && !string.IsNullOrWhiteSpace(id)
+            && ShouldPreferHlsForSeek(type, id);
+
         var target = await _torBoxStreamService.TryResolveTorBoxStreamAsync(
-            redirectUrl, torBoxApiKey, cancellationToken);
+            redirectUrl, torBoxApiKey, preferHlsForSeek, cancellationToken);
         return target?.Url ?? redirectUrl;
+    }
+
+    private static string BuildStreamSessionKey(string type, string id) => $"{type}/{id}";
+
+    private static void MarkRecentPlaybackDisconnect(string type, string id, long bytesWritten)
+    {
+        if (bytesWritten < SeekDetectionMinBytes)
+            return;
+
+        _recentPlaybackDisconnects[BuildStreamSessionKey(type, id)] = DateTime.UtcNow;
+    }
+
+    private bool ShouldPreferHlsForSeek(string type, string id)
+    {
+        var key = BuildStreamSessionKey(type, id);
+        if (!_recentPlaybackDisconnects.TryGetValue(key, out var disconnectedAt))
+            return false;
+
+        if (DateTime.UtcNow - disconnectedAt > SeekDetectionWindow)
+        {
+            _recentPlaybackDisconnects.TryRemove(key, out _);
+            return false;
+        }
+
+        _logger.LogInformation(
+            "Jfresolve: Recent playback disconnect for {Key} — using TorBox HLS for seek",
+            key);
+        _recentPlaybackDisconnects.TryRemove(key, out _);
+        return true;
     }
 
     private static string EncodeHlsResourceUrl(string url)
@@ -1778,6 +1818,7 @@ public class JfresolveApiController : ControllerBase
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     _logger.LogInformation("Jfresolve: Client disconnected (playback stopped) for {Type}/{Id} after ~{Bytes} bytes", type, id, totalBytesWritten);
+                    MarkRecentPlaybackDisconnect(type, id, totalBytesWritten);
                     AbortConnection();
                     return (totalBytesWritten, StreamStopReason.ClientDisconnect);
                 }

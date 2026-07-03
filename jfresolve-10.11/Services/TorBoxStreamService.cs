@@ -58,6 +58,7 @@ public class TorBoxStreamService
     public async Task<TorBoxStreamTarget?> TryResolveTorBoxStreamAsync(
         string streamUrl,
         string? torBoxApiKey,
+        bool preferHlsForSeek = false,
         CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(streamUrl) || string.IsNullOrWhiteSpace(torBoxApiKey))
@@ -76,7 +77,7 @@ public class TorBoxStreamService
                 requestDlRef = new TorrentRef(requestDlTorrentId, requestDlFileId);
 
             return await ResolveTorBoxPlaybackAsync(
-                torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, cancellationToken);
+                torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, preferHlsForSeek, cancellationToken);
         }
 
         if (!TryParseTorrentioTorBoxUrl(streamUrl, out var infoHash, out var fileIndex))
@@ -97,7 +98,7 @@ public class TorBoxStreamService
         }
 
         return await ResolveTorBoxPlaybackAsync(
-            torBoxApiKey, torrentRef, infoHash, fileIndex, streamUrl, cancellationToken);
+            torBoxApiKey, torrentRef, infoHash, fileIndex, streamUrl, preferHlsForSeek, cancellationToken);
     }
 
     private async Task<TorBoxStreamTarget?> ResolveTorBoxPlaybackAsync(
@@ -106,22 +107,40 @@ public class TorBoxStreamService
         string? infoHash,
         int? fileIndex,
         string fallbackStreamUrl,
+        bool preferHlsForSeek,
         CancellationToken cancellationToken)
     {
         if (torrentRef.HasValue)
         {
-            // /dld/ CDN from requestdl?redirect=false — single MKV file, works with Jellyfin FFmpeg (seek via -ss before -i).
-            var directCdn = await TryGetDirectDownloadCdnUrlAsync(
-                torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
-            if (!string.IsNullOrWhiteSpace(directCdn))
+            if (preferHlsForSeek)
             {
-                _logger.LogInformation(
-                    "Jfresolve: Using TorBox /dld/ CDN for torrent {TorrentId} file {FileId}{HashSuffix} (host={Host})",
-                    torrentRef.Value.TorrentId,
-                    torrentRef.Value.FileId,
-                    string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
-                    Uri.TryCreate(directCdn, UriKind.Absolute, out var cdnUri) ? cdnUri.Host : "unknown");
-                return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directCdn);
+                var hlsPlayback = await TryCreateStreamPlaybackAsync(
+                    torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
+                if (hlsPlayback.HasValue && hlsPlayback.Value.Kind == TorBoxDeliveryKind.Hls)
+                {
+                    _logger.LogInformation(
+                        "Jfresolve: Using TorBox createstream HLS for seek on torrent {TorrentId} file {FileId}{HashSuffix}",
+                        torrentRef.Value.TorrentId,
+                        torrentRef.Value.FileId,
+                        string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}");
+                    return hlsPlayback.Value;
+                }
+            }
+
+            if (!preferHlsForSeek)
+            {
+                var directCdn = await TryGetDirectDownloadCdnUrlAsync(
+                    torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(directCdn))
+                {
+                    _logger.LogInformation(
+                        "Jfresolve: Using TorBox /dld/ CDN for torrent {TorrentId} file {FileId}{HashSuffix} (host={Host})",
+                        torrentRef.Value.TorrentId,
+                        torrentRef.Value.FileId,
+                        string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
+                        Uri.TryCreate(directCdn, UriKind.Absolute, out var cdnUri) ? cdnUri.Host : "unknown");
+                    return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directCdn);
+                }
             }
 
             var playback = await TryCreateStreamPlaybackAsync(
@@ -136,6 +155,17 @@ public class TorBoxStreamService
                 return playback.Value;
             }
 
+            var directFallback = await TryGetDirectDownloadCdnUrlAsync(
+                torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
+            if (!string.IsNullOrWhiteSpace(directFallback))
+            {
+                _logger.LogInformation(
+                    "Jfresolve: Using TorBox /dld/ CDN fallback for torrent {TorrentId} file {FileId}{HashSuffix}",
+                    torrentRef.Value.TorrentId,
+                    torrentRef.Value.FileId,
+                    string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}");
+                return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directFallback);
+            }
             var permalink = BuildRequestDlPermalink(
                 torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId);
             _logger.LogInformation(

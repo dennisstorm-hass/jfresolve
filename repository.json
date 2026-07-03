@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.78",
+        "changelog": "Fix seek freeze: detect FFmpeg seek restart (mid-stream disconnect) and switch to TorBox createstream HLS; keep /dld/ CDN for initial fast playback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.78/jfresolve.zip",
+        "checksum": "d0408de0d315db6c0f12030cc1c2ff3e",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:52:00Z"
+      },
+      {
         "version": "1.0.0.77",
         "changelog": "Fix: ObjectDisposedException when proxying TorBox /dld/ CDN URLs (no redirect). Do not dispose initial HTTP response when it is the same object as the active stream.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.77/jfresolve.zip",
