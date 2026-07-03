@@ -39,9 +39,9 @@ internal enum StreamStopReason
 [Route("Plugins/506f18b85dad4cd3b9a0f7ed933e9939")] // Alternative route using plugin GUID for image requests
 public class JfresolveApiController : ControllerBase
 {
-    private readonly ILogger _logger = NullLogger.Instance;
+    private readonly ILogger<JfresolveApiController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly StreamQualitySelector _qualitySelector = new(NullLogger<StreamQualitySelector>.Instance);
+    private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.CircuitBreaker _addonCircuitBreaker;
 
     // Failover cache: tracks recent playback attempts with time windows
@@ -67,9 +67,13 @@ public class JfresolveApiController : ControllerBase
     private static readonly ConcurrentDictionary<string, (long ContentLength, DateTime Expiry)> _upstreamContentLengthCache = new();
 
     public JfresolveApiController(
-        IHttpClientFactory httpClientFactory)
+        IHttpClientFactory httpClientFactory,
+        ILogger<JfresolveApiController> logger,
+        ILogger<StreamQualitySelector> qualitySelectorLogger)
     {
         _httpClientFactory = httpClientFactory;
+        _logger = logger;
+        _qualitySelector = new StreamQualitySelector(qualitySelectorLogger);
         _addonCircuitBreaker = new Services.CircuitBreaker(
             "StremioAddon",
             NullLogger<Services.CircuitBreaker>.Instance,
@@ -1049,30 +1053,48 @@ public class JfresolveApiController : ControllerBase
             // Use a very long timeout (4 hours) to handle long movies/episodes without interruption
             // The timeout applies to the entire operation including all read operations
             streamHttpClient.Timeout = TimeSpan.FromHours(Constants.StreamRequestTimeoutHours);
+
+            var cancellationToken = HttpContext.RequestAborted;
+            var upstreamMethod = headOnly ? HttpMethod.Head : HttpMethod.Get;
                 
                 // Handle HTTP Range requests for seeking (required by FFmpeg)
                 var rangeHeader = GetRequestHeaderValue("Range");
-            long? rangeStart = null;
-                
-            // Parse range header to extract start position for workaround
+                var rangeInfo = ParseRangeInfo(rangeHeader);
+                long? rangeStart = rangeInfo.Start;
+
                 if (!string.IsNullOrEmpty(rangeHeader))
                 {
-                    _logger.LogDebug("Jfresolve: Range request detected: {Range}", rangeHeader);
-                rangeStart = ParseRangeStart(rangeHeader);
-            }
+                    _logger.LogDebug("Jfresolve: Range request detected: {Range} (suffix={Suffix}, start={Start})",
+                        rangeHeader, rangeInfo.IsSuffixOnly, rangeStart);
+                }
+
+                // MKV cue loading uses suffix ranges (bytes=-N). Convert to absolute once total size is known.
+                if (rangeInfo.IsSuffixOnly)
+                {
+                    var suffixProbeLength = TryGetCachedUpstreamContentLength(redirectUrl)
+                        ?? await ProbeUpstreamContentLengthAsync(streamHttpClient, redirectUrl, cancellationToken);
+                    if (suffixProbeLength.HasValue)
+                    {
+                        CacheUpstreamContentLength(redirectUrl, suffixProbeLength.Value);
+                        rangeHeader = NormalizeRangeHeader(rangeHeader, suffixProbeLength.Value);
+                        rangeInfo = ParseRangeInfo(rangeHeader);
+                        rangeStart = rangeInfo.Start;
+                        _logger.LogInformation(
+                            "Jfresolve: Normalized suffix Range to {Range} (total={Total})",
+                            rangeHeader, suffixProbeLength.Value);
+                    }
+                }
                 
                 // Stream the content directly to the response
             // Use RequestAborted cancellation token so upstream request is cancelled when client disconnects
             // This ensures immediate cleanup when user stops playback
-            var cancellationToken = HttpContext.RequestAborted;
-            var upstreamMethod = headOnly ? HttpMethod.Head : HttpMethod.Get;
             
             // Check cache for final resolved URL (after redirects) to speed up resume
             string? finalUrl = null;
             var now = DateTime.UtcNow;
             CleanupResolvedUrlCacheIfNeeded();
 
-            // On seek (non-zero Range), bypass the cached CDN URL and re-follow redirects with Range.
+            // On seek (non-zero Range or suffix cue read), bypass the cached CDN URL and re-follow redirects with Range.
             // TorBox/debrid CDNs may ignore Range on cached permalinks or return 206 with data from byte 0.
             var isSeekRequest = rangeStart.HasValue && rangeStart.Value > 0;
             if (!isSeekRequest &&
@@ -1233,19 +1255,40 @@ public class JfresolveApiController : ControllerBase
                 }
 
                 var cacheKey = finalUrl ?? redirectUrl;
+                var knownTotalLength = GetUpstreamTotalContentLength(activeStreamResponse)
+                    ?? TryGetCachedUpstreamContentLength(cacheKey)
+                    ?? TryGetCachedUpstreamContentLength(redirectUrl);
+
+                if (!knownTotalLength.HasValue)
+                {
+                    var probedLength = await ProbeUpstreamContentLengthAsync(streamHttpClient, cacheKey, cancellationToken)
+                        ?? await ProbeUpstreamContentLengthAsync(streamHttpClient, redirectUrl, cancellationToken);
+                    if (probedLength.HasValue)
+                    {
+                        knownTotalLength = probedLength.Value;
+                        CacheUpstreamContentLength(cacheKey, probedLength.Value);
+                        CacheUpstreamContentLength(redirectUrl, probedLength.Value);
+                        _logger.LogInformation(
+                            "Jfresolve: Probed upstream Content-Length {Length} for {Url}",
+                            probedLength.Value, cacheKey);
+                    }
+                }
+
                 if (useRangeWorkaround && rangeStart.HasValue &&
-                    !GetUpstreamTotalContentLength(activeStreamResponse).HasValue &&
-                    !TryGetCachedUpstreamContentLength(cacheKey).HasValue)
+                    !knownTotalLength.HasValue)
                 {
                     var probedLength = await ProbeUpstreamContentLengthAsync(streamHttpClient, cacheKey, cancellationToken);
                     if (probedLength.HasValue)
                     {
+                        knownTotalLength = probedLength.Value;
                         CacheUpstreamContentLength(cacheKey, probedLength.Value);
-                        _logger.LogInformation("Jfresolve: Probed upstream Content-Length {Length} for seek on {Url}", probedLength.Value, cacheKey);
+                        _logger.LogInformation(
+                            "Jfresolve: Probed upstream Content-Length {Length} for seek workaround on {Url}",
+                            probedLength.Value, cacheKey);
                     }
                 }
 
-                CopyStreamResponseHeaders(activeStreamResponse, rangeStart, useRangeWorkaround, cacheKey);
+                CopyStreamResponseHeaders(activeStreamResponse, rangeStart, useRangeWorkaround, cacheKey, knownTotalLength);
 
                 if (headOnly)
                 {
@@ -1380,17 +1423,26 @@ public class JfresolveApiController : ControllerBase
     /// <summary>
     /// Copies response headers from the stream response to the client response
     /// </summary>
-    private void CopyStreamResponseHeaders(HttpResponseMessage streamResponse, long? rangeStart, bool useRangeWorkaround, string cacheKey)
+    private void CopyStreamResponseHeaders(
+        HttpResponseMessage streamResponse,
+        long? rangeStart,
+        bool useRangeWorkaround,
+        string cacheKey,
+        long? knownTotalLength = null)
     {
+        knownTotalLength ??= GetUpstreamTotalContentLength(streamResponse)
+            ?? TryGetCachedUpstreamContentLength(cacheKey);
+
         if (useRangeWorkaround && rangeStart.HasValue)
         {
             // Upstream ignored or mishandled the Range request — skip bytes ourselves and synthesize 206 headers.
             Response.StatusCode = 206;
 
-            long? totalLength = GetUpstreamTotalContentLength(streamResponse);
+            long? totalLength = knownTotalLength;
             if (!totalLength.HasValue)
             {
-                totalLength = TryGetCachedUpstreamContentLength(cacheKey);
+                totalLength = GetUpstreamTotalContentLength(streamResponse)
+                    ?? TryGetCachedUpstreamContentLength(cacheKey);
             }
 
             if (totalLength.HasValue)
@@ -1421,6 +1473,15 @@ public class JfresolveApiController : ControllerBase
             var contentRangeValue = GetContentRangeHeader(streamResponse);
             if (!string.IsNullOrEmpty(contentRangeValue))
             {
+                if (knownTotalLength.HasValue)
+                {
+                    var (rangeStartPos, rangeEndPos, _) = ParseContentRangeDetails(contentRangeValue);
+                    if (rangeStartPos.HasValue && rangeEndPos.HasValue)
+                    {
+                        contentRangeValue = $"bytes {rangeStartPos.Value}-{rangeEndPos.Value}/{knownTotalLength.Value}";
+                    }
+                }
+
                 SetResponseHeaderValue("Content-Range", contentRangeValue);
             }
 
@@ -1432,14 +1493,34 @@ public class JfresolveApiController : ControllerBase
             else if (streamResponse.StatusCode == System.Net.HttpStatusCode.OK)
             {
                 // FFmpeg MKV seeks need total file size (Content-Length) to calculate HTTP byte offsets.
-                var totalLength = GetUpstreamTotalContentLength(streamResponse)
-                    ?? TryGetCachedUpstreamContentLength(cacheKey);
-                if (totalLength.HasValue)
+                if (knownTotalLength.HasValue)
                 {
-                    Response.ContentLength = totalLength.Value;
-                    CacheUpstreamContentLength(cacheKey, totalLength.Value);
-                    _logger.LogDebug("Jfresolve: Forwarding upstream Content-Length {Length} for {CacheKey}", totalLength.Value, cacheKey);
+                    Response.ContentLength = knownTotalLength.Value;
+                    CacheUpstreamContentLength(cacheKey, knownTotalLength.Value);
+                    _logger.LogDebug("Jfresolve: Forwarding Content-Length {Length} for {CacheKey}", knownTotalLength.Value, cacheKey);
                 }
+            }
+            else if (streamResponse.StatusCode == System.Net.HttpStatusCode.PartialContent &&
+                     knownTotalLength.HasValue &&
+                     !Response.ContentLength.HasValue)
+            {
+                var contentRangeValue2 = GetContentRangeHeader(streamResponse);
+                var (startPos, endPos, _) = ParseContentRangeDetails(contentRangeValue2 ?? string.Empty);
+                if (startPos.HasValue && endPos.HasValue)
+                {
+                    Response.ContentLength = endPos.Value - startPos.Value + 1;
+                }
+            }
+        }
+
+        if (knownTotalLength.HasValue)
+        {
+            CacheUpstreamContentLength(cacheKey, knownTotalLength.Value);
+            if (!Response.ContentLength.HasValue &&
+                !useRangeWorkaround &&
+                Response.StatusCode == StatusCodes.Status200OK)
+            {
+                Response.ContentLength = knownTotalLength.Value;
             }
         }
 
@@ -2865,15 +2946,21 @@ public class JfresolveApiController : ControllerBase
     /// </summary>
     private static (long? start, long? total) ParseContentRange(string contentRange)
     {
+        var (start, end, total) = ParseContentRangeDetails(contentRange);
+        return (start, total);
+    }
+
+    private static (long? start, long? end, long? total) ParseContentRangeDetails(string contentRange)
+    {
         if (string.IsNullOrWhiteSpace(contentRange))
-            return (null, null);
+            return (null, null, null);
 
         if (!contentRange.StartsWith("bytes ", StringComparison.OrdinalIgnoreCase))
-            return (null, null);
+            return (null, null, null);
 
         var slashIndex = contentRange.IndexOf('/');
         if (slashIndex < 0)
-            return (null, null);
+            return (null, null, null);
 
         var rangePart = contentRange.Substring(6, slashIndex - 6).Trim();
         var totalPart = contentRange.Substring(slashIndex + 1).Trim();
@@ -2884,7 +2971,7 @@ public class JfresolveApiController : ControllerBase
 
         var dashIndex = rangePart.IndexOf('-');
         if (dashIndex < 0)
-            return (null, total);
+            return (null, null, total);
 
         long? start = null;
         if (!string.IsNullOrWhiteSpace(rangePart[..dashIndex]) &&
@@ -2893,35 +2980,76 @@ public class JfresolveApiController : ControllerBase
             start = parsedStart;
         }
 
-        return (start, total);
+        long? end = null;
+        if (!string.IsNullOrWhiteSpace(rangePart[(dashIndex + 1)..]) &&
+            long.TryParse(rangePart[(dashIndex + 1)..], out var parsedEnd))
+        {
+            end = parsedEnd;
+        }
+
+        return (start, end, total);
+    }
+
+    private readonly struct RangeInfo
+    {
+        public long? Start { get; init; }
+        public long? End { get; init; }
+        public long? SuffixLength { get; init; }
+        public bool IsSuffixOnly => !Start.HasValue && SuffixLength.HasValue;
     }
 
     /// <summary>
-    /// Parses the Range header to extract the start byte position
-    /// Supports formats like "bytes=123-", "bytes=123-456", "bytes=-456"
+    /// Parses the Range header into start/end/suffix components.
+    /// Supports "bytes=123-", "bytes=123-456", and "bytes=-456" (suffix / cue reads).
     /// </summary>
-    private static long? ParseRangeStart(string rangeHeader)
+    private static RangeInfo ParseRangeInfo(string? rangeHeader)
     {
         if (string.IsNullOrWhiteSpace(rangeHeader))
-            return null;
+            return default;
 
-        // Range header format: "bytes=start-end" or "bytes=start-" or "bytes=-end"
         if (!rangeHeader.StartsWith("bytes=", StringComparison.OrdinalIgnoreCase))
-            return null;
+            return default;
 
-        var rangeValue = rangeHeader.Substring(6).Trim(); // Remove "bytes="
+        var rangeValue = rangeHeader.Substring(6).Trim();
         var parts = rangeValue.Split('-');
-        
         if (parts.Length != 2)
-            return null;
+            return default;
 
-        // If start is specified, parse it
-        if (!string.IsNullOrWhiteSpace(parts[0]) && long.TryParse(parts[0], out var start))
+        long? start = null;
+        long? end = null;
+        long? suffix = null;
+
+        if (!string.IsNullOrWhiteSpace(parts[0]) && long.TryParse(parts[0], out var parsedStart))
+            start = parsedStart;
+
+        if (!string.IsNullOrWhiteSpace(parts[1]) && long.TryParse(parts[1], out var parsedEnd))
+            end = parsedEnd;
+        else if (string.IsNullOrWhiteSpace(parts[0]) && !string.IsNullOrWhiteSpace(parts[1]) &&
+                 long.TryParse(parts[1], out var parsedSuffix))
+            suffix = parsedSuffix;
+
+        return new RangeInfo
         {
-            return start;
-        }
+            Start = start,
+            End = end,
+            SuffixLength = suffix,
+        };
+    }
 
-        return null;
+    /// <summary>
+    /// Converts suffix ranges (bytes=-N) to absolute byte ranges once total file size is known.
+    /// FFmpeg uses suffix ranges to read MKV Cues/index from the end of the file.
+    /// </summary>
+    private static string? NormalizeRangeHeader(string? rangeHeader, long totalLength)
+    {
+        var info = ParseRangeInfo(rangeHeader);
+        if (!info.IsSuffixOnly || !info.SuffixLength.HasValue || totalLength <= 0)
+            return rangeHeader;
+
+        var suffix = info.SuffixLength.Value;
+        var start = Math.Max(0, totalLength - suffix);
+        var end = totalLength - 1;
+        return $"bytes={start}-{end}";
     }
 }
 

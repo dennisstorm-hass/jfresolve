@@ -537,6 +537,22 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.IsRemote = true;
         // Don't force transcoding - let Jellyfin decide based on codec compatibility, client capabilities, etc.
         // SupportsDirectPlay, SupportsDirectStream, and SupportsTranscoding will be determined by Jellyfin
+        ApplyEstimatedSize(info);
+    }
+
+    /// <summary>
+    /// FFmpeg MKV HTTP byte seeks need total file size; ffprobe often leaves Size null on remote URLs.
+    /// </summary>
+    private static void ApplyEstimatedSize(MediaSourceInfo info)
+    {
+        if (info.Size is > 0)
+            return;
+
+        if (info.Bitrate is > 0 && info.RunTimeTicks is > 0)
+        {
+            var seconds = info.RunTimeTicks.Value / 10_000_000.0;
+            info.Size = (long)(seconds * info.Bitrate.Value / 8.0);
+        }
     }
 
     private bool IsJfresolve(BaseItem item)

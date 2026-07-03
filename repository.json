@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.67",
+        "changelog": "Fix: MKV seek desync during Jellyfin HLS transcode (follow-up). Normalize suffix Range requests (bytes=-N) for MKV cue/index reads, always probe and forward Content-Length, estimate MediaSource Size from bitrate/runtime, and restore real plugin logging for seek diagnostics.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.67/jfresolve.zip",
+        "checksum": "7631c6d56328e68dde83223486093471",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T07:05:00Z"
+      },
+      {
         "version": "1.0.0.66",
         "changelog": "Fix: MKV seek desync during Jellyfin HLS transcode. Forward upstream Content-Length on full responses, add HEAD support on resolve endpoint, cache/probe file size for FFmpeg byte-offset seeks, and improve Range handling for TorBox/debrid streams.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.66/jfresolve.zip",
