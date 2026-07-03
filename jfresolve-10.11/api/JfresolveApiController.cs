@@ -6,6 +6,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net.Sockets;
 using System.Reflection;
+using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
@@ -255,6 +256,7 @@ public class JfresolveApiController : ControllerBase
         [FromQuery] string? episode = null,
         [FromQuery] string? quality = null,
         [FromQuery] int? index = null,
+        [FromQuery] string? hlsSeg = null,
         [FromQuery] Guid? userId = null)
     {
         // Resolve endpoint is intentionally open for FFmpeg/probe compatibility.
@@ -276,10 +278,36 @@ public class JfresolveApiController : ControllerBase
         index = validationResult.Index;
 
         _logger.LogInformation(
-            "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}",
+            "Jfresolve: ResolveStream called - Type: {Type}, Id: {Id}, Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index}, RequestPath: {Path}, Range: {Range}, HlsSeg: {HlsSeg}",
             type, id, season ?? "N/A", episode ?? "N/A", quality ?? "N/A", index?.ToString() ?? "N/A",
-            Request.Path, GetRequestHeaderValue("Range")
+            Request.Path, GetRequestHeaderValue("Range"), string.IsNullOrWhiteSpace(hlsSeg) ? "N/A" : "yes"
         );
+
+        if (!string.IsNullOrWhiteSpace(hlsSeg))
+        {
+            if (!TryDecodeHlsResourceUrl(hlsSeg, out var hlsResourceUrl))
+            {
+                return BadRequest("Invalid hlsSeg parameter");
+            }
+
+            try
+            {
+                var headOnly = HttpMethods.IsHead(Request.Method);
+                _logger.LogInformation("Jfresolve: Proxying HLS sub-resource for {Type}/{Id}", type, id);
+                if (TorBoxStreamService.IsHlsUrl(hlsResourceUrl))
+                {
+                    return await ProxyHlsPlaylistAsync(hlsResourceUrl, type, id, headOnly, userId, HttpContext.RequestAborted);
+                }
+
+                return await ProxyStreamAsync(hlsResourceUrl, type, id, headOnly, userId, allowHlsDispatch: false);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+            {
+                if (!Response.HasStarted)
+                    return StatusCode(502, "Failed to proxy HLS segment");
+                return new EmptyResult();
+            }
+        }
 
         var config = GetPluginConfiguration();
         if (config == null)
@@ -323,7 +351,7 @@ public class JfresolveApiController : ControllerBase
                 redirectUrl,
                 GetPluginConfiguration()?.TorBoxApiKey,
                 HttpContext.RequestAborted);
-            return await ProxyStreamAsync(redirectUrl, type, id, headOnly);
+            return await ProxyStreamAsync(redirectUrl, type, id, headOnly, userId);
         }
         catch (HttpRequestException ex)
         {
@@ -518,12 +546,12 @@ public class JfresolveApiController : ControllerBase
         var now = DateTime.UtcNow;
         CleanupRedirectUrlCacheIfNeeded();
         
-        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
+        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now
+            && !TorBoxStreamService.IsHlsUrl(cachedRedirect.RedirectUrl))
         {
             _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
                 type, id, season ?? "N/A", episode ?? "N/A");
-            return await NormalizeStreamUpstreamUrlAsync(
-                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None);
+            return cachedRedirect.RedirectUrl;
         }
 
         // Get streams from addon (returns JsonDocument that must be kept alive)
@@ -547,10 +575,15 @@ public class JfresolveApiController : ControllerBase
             {
                 redirectUrl = await NormalizeStreamUpstreamUrlAsync(
                     redirectUrl, config.TorBoxApiKey, CancellationToken.None);
-                var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
-                _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
-                _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
-                    type, id, season ?? "N/A", episode ?? "N/A");
+
+                // TorBox createstream HLS URLs are short-lived — always re-resolve on the next request.
+                if (!TorBoxStreamService.IsHlsUrl(redirectUrl))
+                {
+                    var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
+                    _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
+                    _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                        type, id, season ?? "N/A", episode ?? "N/A");
+                }
             }
 
             return redirectUrl;
@@ -1042,7 +1075,7 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
-    /// Rewrites Torrentio TorBox resolve URLs to TorBox requestdl permalinks when possible.
+    /// Rewrites Torrentio TorBox resolve URLs to TorBox createstream HLS or requestdl permalinks when possible.
     /// </summary>
     private async Task<string> NormalizeStreamUpstreamUrlAsync(
         string redirectUrl,
@@ -1052,16 +1085,151 @@ public class JfresolveApiController : ControllerBase
         if (string.IsNullOrWhiteSpace(redirectUrl))
             return redirectUrl;
 
-        var normalized = await _torBoxStreamService.TryNormalizeToRequestDlPermalinkAsync(
+        var target = await _torBoxStreamService.TryResolveTorBoxStreamAsync(
             redirectUrl, torBoxApiKey, cancellationToken);
-        return normalized ?? redirectUrl;
+        return target?.Url ?? redirectUrl;
+    }
+
+    private static string EncodeHlsResourceUrl(string url)
+    {
+        var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(url));
+        return base64.TrimEnd('=').Replace('+', '-').Replace('/', '_');
+    }
+
+    private static bool TryDecodeHlsResourceUrl(string encoded, out string url)
+    {
+        url = string.Empty;
+        if (string.IsNullOrWhiteSpace(encoded))
+            return false;
+
+        try
+        {
+            var base64 = encoded.Replace('-', '+').Replace('_', '/');
+            switch (base64.Length % 4)
+            {
+                case 2: base64 += "=="; break;
+                case 3: base64 += "="; break;
+            }
+
+            var bytes = Convert.FromBase64String(base64);
+            url = Encoding.UTF8.GetString(bytes);
+            return IsValidStreamUrl(url);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string BuildHlsProxyBaseUrl(Guid? userId)
+    {
+        if (!userId.HasValue)
+            return $"{Request.Scheme}://{Request.Host}{Request.Path}";
+
+        return $"{Request.Scheme}://{Request.Host}{Request.Path}?userId={userId.Value:N}";
+    }
+
+    private static string BuildHlsProxyUrl(string proxyBaseUrl, string absoluteResourceUrl)
+    {
+        var encoded = EncodeHlsResourceUrl(absoluteResourceUrl);
+        var separator = proxyBaseUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        return $"{proxyBaseUrl}{separator}hlsSeg={encoded}";
+    }
+
+    private static string RewriteHlsPlaylist(string playlist, string playlistUrl, string proxyBaseUrl)
+    {
+        Uri.TryCreate(playlistUrl, UriKind.Absolute, out var playlistUri);
+        var sb = new StringBuilder(playlist.Length + 256);
+
+        foreach (var line in playlist.Split('\n'))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            string absoluteUrl;
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absoluteUri))
+            {
+                absoluteUrl = absoluteUri.ToString();
+            }
+            else if (playlistUri != null && Uri.TryCreate(playlistUri, trimmed, out var relativeUri))
+            {
+                absoluteUrl = relativeUri.ToString();
+            }
+            else
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            if (!IsValidStreamUrl(absoluteUrl))
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            sb.AppendLine(BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
+        }
+
+        return sb.ToString();
+    }
+
+    private async Task<IActionResult> ProxyHlsPlaylistAsync(
+        string playlistUrl,
+        string type,
+        string id,
+        bool headOnly,
+        Guid? userId,
+        CancellationToken cancellationToken)
+    {
+        _logger.LogInformation("Jfresolve: Proxying TorBox HLS playlist from {Url}", playlistUrl);
+
+        SetResponseHeaderValue("Cache-Control", Constants.CacheControlNoCache);
+        SetResponseHeaderValue("Pragma", Constants.PragmaNoCache);
+        SetResponseHeaderValue("Expires", Constants.ExpiresZero);
+        Response.ContentType = "application/vnd.apple.mpegurl";
+
+        if (headOnly)
+        {
+            return new EmptyResult();
+        }
+
+        var client = _httpClientFactory.CreateClient("Jfresolve.Stream");
+        using var request = new HttpRequestMessage(HttpMethod.Get, playlistUrl);
+        using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        if (!response.IsSuccessStatusCode)
+        {
+            _logger.LogWarning(
+                "Jfresolve: Failed to fetch HLS playlist {Status} from {Url}",
+                (int)response.StatusCode, playlistUrl);
+            return StatusCode((int)response.StatusCode, "Failed to fetch HLS playlist");
+        }
+
+        var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
+        var proxyBase = BuildHlsProxyBaseUrl(userId);
+        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase);
+        return Content(rewritten, "application/vnd.apple.mpegurl");
     }
 
     /// <summary>
     /// Proxies the stream from the redirect URL to the client
     /// </summary>
-    private async Task<IActionResult> ProxyStreamAsync(string redirectUrl, string type, string id, bool headOnly = false)
+    private async Task<IActionResult> ProxyStreamAsync(
+        string redirectUrl,
+        string type,
+        string id,
+        bool headOnly = false,
+        Guid? userId = null,
+        bool allowHlsDispatch = true)
     {
+        if (allowHlsDispatch && TorBoxStreamService.IsHlsUrl(redirectUrl))
+        {
+            return await ProxyHlsPlaylistAsync(redirectUrl, type, id, headOnly, userId, HttpContext.RequestAborted);
+        }
+
             // Jellyfin 10.11.6 compatibility: Proxy the stream instead of redirecting
             // FFmpeg in 10.11.6 doesn't properly follow HTTP redirects from plugin endpoints
             // By proxying, FFmpeg gets the stream directly without needing to follow redirects
