@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.79",
+        "changelog": "Fix TorBox HLS seek: rewrite playlist with direct tb-cdn segment URLs for FFmpeg (no hlsSeg proxy); remember HLS session for subsequent seeks.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.79/jfresolve.zip",
+        "checksum": "1afbcdb822ba0d321212abd43f769f66",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T11:35:00Z"
+      },
+      {
         "version": "1.0.0.78",
         "changelog": "Fix seek freeze: detect FFmpeg seek restart (mid-stream disconnect) and switch to TorBox createstream HLS; keep /dld/ CDN for initial fast playback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.78/jfresolve.zip",

@@ -70,8 +70,11 @@ public class JfresolveApiController : ControllerBase
 
     // Recent FFmpeg disconnects (seek restarts stop the prior download mid-stream).
     private static readonly ConcurrentDictionary<string, DateTime> _recentPlaybackDisconnects = new();
+    // After HLS is used once, keep using it for subsequent seeks in the same title.
+    private static readonly ConcurrentDictionary<string, DateTime> _activeHlsPlayback = new();
     private const long SeekDetectionMinBytes = 50_000_000;
     private static readonly TimeSpan SeekDetectionWindow = TimeSpan.FromSeconds(20);
+    private static readonly TimeSpan HlsPlaybackSessionWindow = TimeSpan.FromHours(2);
 
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
@@ -1115,6 +1118,15 @@ public class JfresolveApiController : ControllerBase
     private bool ShouldPreferHlsForSeek(string type, string id)
     {
         var key = BuildStreamSessionKey(type, id);
+        if (_activeHlsPlayback.TryGetValue(key, out var hlsStartedAt)
+            && DateTime.UtcNow - hlsStartedAt <= HlsPlaybackSessionWindow)
+        {
+            _logger.LogInformation(
+                "Jfresolve: Continuing TorBox HLS delivery for {Key} (subsequent seek)",
+                key);
+            return true;
+        }
+
         if (!_recentPlaybackDisconnects.TryGetValue(key, out var disconnectedAt))
             return false;
 
@@ -1129,6 +1141,11 @@ public class JfresolveApiController : ControllerBase
             key);
         _recentPlaybackDisconnects.TryRemove(key, out _);
         return true;
+    }
+
+    private static void MarkActiveHlsPlayback(string type, string id)
+    {
+        _activeHlsPlayback[BuildStreamSessionKey(type, id)] = DateTime.UtcNow;
     }
 
     private static string EncodeHlsResourceUrl(string url)
@@ -1177,7 +1194,31 @@ public class JfresolveApiController : ControllerBase
         return $"{proxyBaseUrl}{separator}hlsSeg={encoded}";
     }
 
-    private static string RewriteHlsPlaylist(string playlist, string playlistUrl, string proxyBaseUrl)
+    private static bool IsTorBoxHlsPlaylistUrl(string playlistUrl) =>
+        playlistUrl.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase)
+        && playlistUrl.Contains(".m3u8", StringComparison.OrdinalIgnoreCase);
+
+    private static string AppendTorBoxPlaylistQuery(string resourceUrl, Uri? playlistUri)
+    {
+        if (playlistUri == null || string.IsNullOrWhiteSpace(playlistUri.Query))
+            return resourceUrl;
+
+        if (resourceUrl.Contains("token=", StringComparison.OrdinalIgnoreCase))
+            return resourceUrl;
+
+        var query = playlistUri.Query.TrimStart('?');
+        if (string.IsNullOrWhiteSpace(query))
+            return resourceUrl;
+
+        var separator = resourceUrl.Contains('?', StringComparison.Ordinal) ? "&" : "?";
+        return $"{resourceUrl}{separator}{query}";
+    }
+
+    private static string RewriteHlsPlaylist(
+        string playlist,
+        string playlistUrl,
+        string proxyBaseUrl,
+        bool useDirectSegmentUrls)
     {
         Uri.TryCreate(playlistUrl, UriKind.Absolute, out var playlistUri);
         var sb = new StringBuilder(playlist.Length + 256);
@@ -1206,13 +1247,17 @@ public class JfresolveApiController : ControllerBase
                 continue;
             }
 
+            absoluteUrl = AppendTorBoxPlaylistQuery(absoluteUrl, playlistUri);
+
             if (!IsValidStreamUrl(absoluteUrl))
             {
                 sb.AppendLine(trimmed);
                 continue;
             }
 
-            sb.AppendLine(BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
+            sb.AppendLine(useDirectSegmentUrls
+                ? absoluteUrl
+                : BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
         }
 
         return sb.ToString();
@@ -1232,6 +1277,7 @@ public class JfresolveApiController : ControllerBase
         SetResponseHeaderValue("Pragma", Constants.PragmaNoCache);
         SetResponseHeaderValue("Expires", Constants.ExpiresZero);
         Response.ContentType = "application/vnd.apple.mpegurl";
+        SetResponseHeaderValue("Content-Disposition", "inline; filename=\"stream.m3u8\"");
 
         if (headOnly)
         {
@@ -1250,8 +1296,17 @@ public class JfresolveApiController : ControllerBase
         }
 
         var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
+        var useDirectSegmentUrls = IsTorBoxHlsPlaylistUrl(playlistUrl);
+        if (useDirectSegmentUrls)
+        {
+            MarkActiveHlsPlayback(type, id);
+            _logger.LogInformation(
+                "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
+                type, id);
+        }
+
         var proxyBase = BuildHlsProxyBaseUrl(userId);
-        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase);
+        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls);
         return Content(rewritten, "application/vnd.apple.mpegurl");
     }
 
