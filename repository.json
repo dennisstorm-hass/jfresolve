@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.75",
+        "changelog": "Fix: TorBox seek — always call createstream before requestdl. Parse torrent_id from Torrentio redirect when mylist misses; upgrade cached requestdl URLs; cache raw addon URLs only and re-normalize every request.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.75/jfresolve.zip",
+        "checksum": "6275fba3d23d20f0a2ce112c9b6c3292",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:30:00Z"
+      },
+      {
         "version": "1.0.0.74",
         "changelog": "Fix: TorBox createstream verified against live API. Use hls_url immediately when present (even if needs_transcoding=true); stop re-calling createstream and discarding HLS. Matches api.torbox.app createstream/getstreamdata contract.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.74/jfresolve.zip",

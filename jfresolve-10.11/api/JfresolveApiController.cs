@@ -546,13 +546,12 @@ public class JfresolveApiController : ControllerBase
         var now = DateTime.UtcNow;
         CleanupRedirectUrlCacheIfNeeded();
         
-        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now
-            && !TorBoxStreamService.IsHlsUrl(cachedRedirect.RedirectUrl)
-            && !TorBoxStreamService.IsTorBoxStreamCdnUrl(cachedRedirect.RedirectUrl))
+        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
         {
-            _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+            _logger.LogDebug("Jfresolve: Using cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
                 type, id, season ?? "N/A", episode ?? "N/A");
-            return cachedRedirect.RedirectUrl;
+            return await NormalizeStreamUpstreamUrlAsync(
+                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None);
         }
 
         // Get streams from addon (returns JsonDocument that must be kept alive)
@@ -571,21 +570,19 @@ public class JfresolveApiController : ControllerBase
             var redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
                 type, id, season, episode, quality, index, streamsDoc.RootElement, config, preferHdrOverDolbyVision);
             
-            // Cache the resolved redirect URL for future Range requests
+            // Cache raw addon resolve URLs only; always re-run TorBox createstream normalization per request.
             if (!string.IsNullOrWhiteSpace(redirectUrl))
             {
-                redirectUrl = await NormalizeStreamUpstreamUrlAsync(
-                    redirectUrl, config.TorBoxApiKey, CancellationToken.None);
-
-                // TorBox createstream CDN/HLS URLs are short-lived — always re-resolve on the next request.
-                if (!TorBoxStreamService.IsHlsUrl(redirectUrl)
-                    && !TorBoxStreamService.IsTorBoxStreamCdnUrl(redirectUrl))
+                if (TorBoxStreamService.ShouldCacheAddonRedirectUrl(redirectUrl))
                 {
                     var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                     _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
-                    _logger.LogDebug("Jfresolve: Cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
+                    _logger.LogDebug("Jfresolve: Cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
                         type, id, season ?? "N/A", episode ?? "N/A");
                 }
+
+                redirectUrl = await NormalizeStreamUpstreamUrlAsync(
+                    redirectUrl, config.TorBoxApiKey, CancellationToken.None);
             }
 
             return redirectUrl;

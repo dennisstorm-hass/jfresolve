@@ -6,6 +6,7 @@ using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading;
 using System.Threading.Tasks;
+using Microsoft.AspNetCore.WebUtilities;
 using Microsoft.Extensions.Logging;
 
 namespace Jfresolve.Services;
@@ -69,12 +70,44 @@ public class TorBoxStreamService
             return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, streamUrl);
 
         if (IsTorBoxRequestDlPermalink(streamUrl))
-            return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, EnsureRedirectTrue(streamUrl));
+        {
+            TorrentRef? requestDlRef = null;
+            if (TryParseRequestDlUrl(streamUrl, out var requestDlTorrentId, out var requestDlFileId))
+                requestDlRef = new TorrentRef(requestDlTorrentId, requestDlFileId);
+
+            return await ResolveTorBoxPlaybackAsync(
+                torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, cancellationToken);
+        }
 
         if (!TryParseTorrentioTorBoxUrl(streamUrl, out var infoHash, out var fileIndex))
             return null;
 
         var torrentRef = await TryResolveTorrentRefFromMyListAsync(torBoxApiKey, infoHash, fileIndex, cancellationToken);
+        if (!torrentRef.HasValue)
+        {
+            var fromRedirect = await TryDiscoverRequestDlPermalinkAsync(streamUrl, cancellationToken);
+            if (!string.IsNullOrEmpty(fromRedirect)
+                && TryParseRequestDlUrl(fromRedirect, out var redirectTorrentId, out var redirectFileId))
+            {
+                torrentRef = new TorrentRef(redirectTorrentId, redirectFileId);
+                _logger.LogInformation(
+                    "Jfresolve: Resolved TorBox torrent {TorrentId} file {FileId} from Torrentio redirect for hash {Hash}",
+                    redirectTorrentId, redirectFileId, infoHash);
+            }
+        }
+
+        return await ResolveTorBoxPlaybackAsync(
+            torBoxApiKey, torrentRef, infoHash, fileIndex, streamUrl, cancellationToken);
+    }
+
+    private async Task<TorBoxStreamTarget?> ResolveTorBoxPlaybackAsync(
+        string torBoxApiKey,
+        TorrentRef? torrentRef,
+        string? infoHash,
+        int? fileIndex,
+        string fallbackStreamUrl,
+        CancellationToken cancellationToken)
+    {
         if (torrentRef.HasValue)
         {
             var playback = await TryCreateStreamPlaybackAsync(
@@ -82,31 +115,30 @@ public class TorBoxStreamService
             if (playback.HasValue)
             {
                 _logger.LogInformation(
-                    "Jfresolve: Using TorBox createstream {Kind} for hash {Hash} torrent {TorrentId} file {FileId}",
+                    "Jfresolve: Using TorBox createstream {Kind} for torrent {TorrentId} file {FileId}{HashSuffix}",
                     playback.Value.Kind == TorBoxDeliveryKind.Hls ? "HLS" : "CDN",
-                    infoHash, torrentRef.Value.TorrentId, torrentRef.Value.FileId);
+                    torrentRef.Value.TorrentId,
+                    torrentRef.Value.FileId,
+                    string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}");
                 return playback.Value;
             }
 
-            var permalink = BuildRequestDlPermalink(torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId);
+            var permalink = BuildRequestDlPermalink(
+                torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId);
             _logger.LogInformation(
-                "Jfresolve: Using TorBox requestdl permalink for hash {Hash} file {FileIndex}",
-                infoHash, fileIndex);
+                "Jfresolve: TorBox createstream unavailable for torrent {TorrentId} file {FileId}, using requestdl fallback{HashSuffix}",
+                torrentRef.Value.TorrentId,
+                torrentRef.Value.FileId,
+                string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" (hash {infoHash})");
             return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, permalink);
         }
 
-        var fromRedirect = await TryDiscoverRequestDlPermalinkAsync(streamUrl, cancellationToken);
-        if (!string.IsNullOrEmpty(fromRedirect))
-        {
-            _logger.LogInformation(
-                "Jfresolve: Discovered TorBox requestdl permalink via redirect chain for hash {Hash}",
-                infoHash);
-            return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, fromRedirect);
-        }
+        if (IsTorBoxRequestDlPermalink(fallbackStreamUrl))
+            return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, EnsureRedirectTrue(fallbackStreamUrl));
 
-        _logger.LogDebug(
-            "Jfresolve: Could not resolve TorBox stream for {Url}, using Torrentio resolve URL",
-            streamUrl);
+        _logger.LogInformation(
+            "Jfresolve: Could not resolve TorBox torrent id for {Url}, using Torrentio resolve URL",
+            fallbackStreamUrl);
         return null;
     }
 
@@ -132,6 +164,47 @@ public class TorBoxStreamService
     {
         return url.Contains("api.torbox.app", StringComparison.OrdinalIgnoreCase)
             && url.Contains("/torrents/requestdl", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool IsTorrentioTorBoxResolveUrl(string url) =>
+        !string.IsNullOrWhiteSpace(url) &&
+        url.Contains("/resolve/torbox/", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// Only cache raw addon resolve URLs. Normalized TorBox delivery URLs must be re-resolved each request.
+    /// </summary>
+    public static bool ShouldCacheAddonRedirectUrl(string url)
+    {
+        if (string.IsNullOrWhiteSpace(url))
+            return false;
+
+        if (IsHlsUrl(url) || IsTorBoxStreamCdnUrl(url) || IsTorBoxRequestDlPermalink(url))
+            return false;
+
+        return IsTorrentioTorBoxResolveUrl(url)
+            || url.Contains("/resolve/realdebrid/", StringComparison.OrdinalIgnoreCase);
+    }
+
+    public static bool TryParseRequestDlUrl(string url, out string torrentId, out string fileId)
+    {
+        torrentId = string.Empty;
+        fileId = "0";
+
+        if (!IsTorBoxRequestDlPermalink(url) || !Uri.TryCreate(url, UriKind.Absolute, out var uri))
+            return false;
+
+        var query = QueryHelpers.ParseQuery(uri.Query);
+        if (!query.TryGetValue("torrent_id", out var torrentIdValues))
+            return false;
+
+        torrentId = torrentIdValues.ToString();
+        if (string.IsNullOrWhiteSpace(torrentId))
+            return false;
+
+        if (query.TryGetValue("file_id", out var fileIdValues) && !string.IsNullOrWhiteSpace(fileIdValues.ToString()))
+            fileId = fileIdValues.ToString();
+
+        return true;
     }
 
     private readonly record struct TorrentRef(string TorrentId, string FileId);
@@ -164,7 +237,9 @@ public class TorBoxStreamService
             using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                _logger.LogDebug("Jfresolve: TorBox mylist returned {Status}", (int)response.StatusCode);
+                _logger.LogInformation(
+                    "Jfresolve: TorBox mylist returned HTTP {Status} for hash {Hash}",
+                    (int)response.StatusCode, infoHash);
                 return null;
             }
 
@@ -196,9 +271,10 @@ public class TorBoxStreamService
         }
         catch (Exception ex)
         {
-            _logger.LogDebug(ex, "Jfresolve: TorBox mylist lookup failed for hash {Hash}", infoHash);
+            _logger.LogInformation(ex, "Jfresolve: TorBox mylist lookup failed for hash {Hash}", infoHash);
         }
 
+        _logger.LogInformation("Jfresolve: TorBox mylist has no entry for hash {Hash}", infoHash);
         return null;
     }
 
