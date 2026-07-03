@@ -512,7 +512,7 @@ public class JfresolveApiController : ControllerBase
         JsonDocument? streamsDoc = null;
         try
         {
-            streamsDoc = await GetStreamsFromAddonAsync(type, id, season, episode, config);
+            streamsDoc = await GetStreamsFromAddonWithDebridFallbackAsync(type, id, season, episode, config);
             if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
             {
                 _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
@@ -543,6 +543,55 @@ public class JfresolveApiController : ControllerBase
     }
 
     /// <summary>
+    /// Gets streams from the Stremio addon, trying TorBox first then RealDebrid fallback.
+    /// Returns JsonDocument that must be disposed by the caller.
+    /// </summary>
+    private async Task<JsonDocument?> GetStreamsFromAddonWithDebridFallbackAsync(
+        string type,
+        string id,
+        string? season,
+        string? episode,
+        Configuration.PluginConfiguration config)
+    {
+        var hasTorBoxKey = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
+        var hasRealDebridKey = !string.IsNullOrWhiteSpace(config.RealDebridApiKey);
+
+        if (!hasTorBoxKey && !hasRealDebridKey)
+        {
+            var legacyManifest = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
+            return await GetStreamsFromAddonAsync(type, id, season, episode, legacyManifest);
+        }
+
+        var baseManifest = UrlBuilder.NormalizeManifestUrl(
+            UrlBuilder.StripDebridKeys(config.AddonManifestUrl));
+
+        if (hasTorBoxKey)
+        {
+            var torBoxManifest = UrlBuilder.InjectDebridKey(
+                baseManifest, Constants.TorBoxDebridParam, config.TorBoxApiKey);
+            _logger.LogInformation("Jfresolve: Fetching streams via TorBox debrid provider");
+            var torBoxStreams = await GetStreamsFromAddonAsync(type, id, season, episode, torBoxManifest);
+            if (torBoxStreams != null && torBoxStreams.RootElement.GetArrayLength() > 0)
+            {
+                return torBoxStreams;
+            }
+
+            torBoxStreams?.Dispose();
+            _logger.LogWarning("Jfresolve: TorBox returned no streams for {Type}/{Id}, trying RealDebrid fallback", type, id);
+        }
+
+        if (hasRealDebridKey)
+        {
+            var realDebridManifest = UrlBuilder.InjectDebridKey(
+                baseManifest, Constants.RealDebridDebridParam, config.RealDebridApiKey);
+            _logger.LogInformation("Jfresolve: Fetching streams via RealDebrid debrid provider");
+            return await GetStreamsFromAddonAsync(type, id, season, episode, realDebridManifest);
+        }
+
+        return null;
+    }
+
+    /// <summary>
     /// Gets streams from the Stremio addon with caching
     /// Returns JsonDocument that must be disposed by the caller
     /// </summary>
@@ -551,10 +600,12 @@ public class JfresolveApiController : ControllerBase
         string id,
         string? season,
         string? episode,
-        Configuration.PluginConfiguration config)
+        string manifestBase)
         {
-            // Normalize the manifest URL (remove stremio://, convert to https://)
-            var manifestBase = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
+            if (string.IsNullOrWhiteSpace(manifestBase))
+            {
+                return null;
+            }
 
             // Build the stream endpoint URL
         string streamUrl = BuildStreamUrl(manifestBase, type, id, season, episode);
@@ -1524,12 +1575,19 @@ public class JfresolveApiController : ControllerBase
     [AllowAnonymous]
     public IActionResult Test()
     {
+        var config = GetPluginConfiguration();
+        var torBoxConfigured = !string.IsNullOrWhiteSpace(config?.TorBoxApiKey);
+        var realDebridConfigured = !string.IsNullOrWhiteSpace(config?.RealDebridApiKey);
+
         return Ok(new
         {
             plugin = "Jfresolve",
             version = JfresolvePlugin.Instance?.Version?.ToString() ?? "Unknown",
             message = "API controller is working!",
-                manifestConfigured = !string.IsNullOrWhiteSpace(GetPluginConfiguration()?.AddonManifestUrl)
+            manifestConfigured = !string.IsNullOrWhiteSpace(config?.AddonManifestUrl),
+            torBoxConfigured,
+            realDebridConfigured,
+            debridFallbackEnabled = torBoxConfigured && realDebridConfigured
         });
     }
 

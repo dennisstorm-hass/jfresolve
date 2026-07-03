@@ -183,7 +183,71 @@
                                     />
                                     <div class="field-description">
                                         Stremio addon manifest URL for resolving
-                                        streams.
+                                        streams. Omit debrid keys here when using
+                                        the Debrid Providers fields below.
+                                    </div>
+                                </div>
+
+                                <div class="alert-info">
+                                    <strong>Debrid Providers:</strong> TorBox is
+                                    used first. If TorBox returns no streams,
+                                    RealDebrid is tried automatically. Remove
+                                    <code>torbox=</code> / <code>realdebrid=</code>
+                                    from the manifest URL when using these fields.
+                                </div>
+
+                                <div class="inputContainer field-group">
+                                    <label
+                                        class="inputLabel"
+                                        for="TorBoxApiKey"
+                                        >TorBox API Key (Primary)</label
+                                    >
+                                    <input
+                                        type="password"
+                                        id="TorBoxApiKey"
+                                        is="emby-input"
+                                        class="emby-input"
+                                        placeholder="TorBox API key"
+                                        autocomplete="off"
+                                    />
+                                    <div class="field-description">
+                                        Primary debrid provider. Get your API key
+                                        from
+                                        <a
+                                            href="https://torbox.app"
+                                            target="_blank"
+                                            rel="noopener"
+                                            style="color: #00a4dc"
+                                            >torbox.app</a
+                                        >
+                                        (Settings → API).
+                                    </div>
+                                </div>
+
+                                <div class="inputContainer field-group">
+                                    <label
+                                        class="inputLabel"
+                                        for="RealDebridApiKey"
+                                        >RealDebrid API Key (Fallback)</label
+                                    >
+                                    <input
+                                        type="password"
+                                        id="RealDebridApiKey"
+                                        is="emby-input"
+                                        class="emby-input"
+                                        placeholder="RealDebrid API token"
+                                        autocomplete="off"
+                                    />
+                                    <div class="field-description">
+                                        Fallback debrid provider when TorBox
+                                        returns no streams. Get your token from
+                                        <a
+                                            href="https://real-debrid.com/apitoken"
+                                            target="_blank"
+                                            rel="noopener"
+                                            style="color: #00a4dc"
+                                            >real-debrid.com/apitoken</a
+                                        >.
                                     </div>
                                 </div>
 
@@ -1043,6 +1107,10 @@
                                 "http://localhost:8096";
                             document.getElementById("AddonManifestUrl").value =
                                 config.AddonManifestUrl || "";
+                            document.getElementById("TorBoxApiKey").value =
+                                config.TorBoxApiKey || "";
+                            document.getElementById("RealDebridApiKey").value =
+                                config.RealDebridApiKey || "";
                             document.getElementById("EnableSearch").checked =
                                 config.EnableSearch !== false;
                             document.getElementById("PreferredQuality").value =
@@ -1205,6 +1273,12 @@
                             config.AddonManifestUrl =
                                 document.getElementById(
                                     "AddonManifestUrl",
+                                ).value;
+                            config.TorBoxApiKey =
+                                document.getElementById("TorBoxApiKey").value;
+                            config.RealDebridApiKey =
+                                document.getElementById(
+                                    "RealDebridApiKey",
                                 ).value;
                             config.EnableSearch =
                                 document.getElementById("EnableSearch").checked;

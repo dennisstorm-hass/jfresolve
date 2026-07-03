@@ -43,6 +43,10 @@ public static class Constants
 
     // API endpoints
     public const string TmdbBaseUrl = "https://api.themoviedb.org/3";
+
+    // Torrentio debrid manifest path parameters
+    public const string TorBoxDebridParam = "torbox";
+    public const string RealDebridDebridParam = "realdebrid";
     
     // Limits
     public const int MaxItemsPerQualityDefault = 1;

@@ -58,7 +58,7 @@ Similar project: If you aren't interested in using the plugin, you can instead u
    ```
    https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/repository.json
    ```
-2. Install and configure your plugin. Tested with Torrentio, TorrentioRD, Aiostreams, MediaFusion. Your plugin needs to have your real debrid key setup.
+2. Install and configure your plugin. Tested with Torrentio, TorrentioRD, Aiostreams, MediaFusion. Configure debrid API keys in the plugin admin settings (TorBox primary, RealDebrid fallback).
 3. During the first time configuration or after adding a new library path, after saving your settings, you should restart Jellyfin, then trigger a library refresh for changes to take effect.
 4. If you have used an older version of Jfresolve older than 1.0.0.3, you need to uninstall the older version.
 
@@ -71,10 +71,11 @@ This fork is specifically tested and compatible with Jellyfin 10.11.6. If you're
 
 - **TMDb API Key**: Get your free API key at [themoviedb.org/settings/api](https://www.themoviedb.org/settings/api).
 - **Jellyfin Base URL**: Your Jellyfin server URL (e.g., `http://127.0.0.1:8096`).
-- **Addon Manifest URL**: Stremio addon manifest URL (required for streaming).
-  **Sample Add-on url** ```stremio://torrentio.strem.fun/providers=yts,eztv,rarbg,1337x,thepiratebay,kickasstorrents,torrentgalaxy,magnetdl,horriblesubs,nyaasi,tokyotosho,anidex|qualityfilter=brremux,scr,cam|limit=1|debridoptions=nodownloadlinks,nocatalog|realdebrid=(input your real debrid key here with no brackets)/manifest.json```
-  The sample add-on url can be used in your configuration, replace **(input your real debrid key here with no brackets)** with your real debrid key and paste into the plugin settings Addon link (Manifest JSON URL).
-- **Debrid Account**: Tested with Real Debrid, other providers can be tested. Debrid provider is configured in your stremio plugin settings.
+- **Addon Manifest URL**: Stremio addon manifest URL (required for streaming). Use a base Torrentio URL without embedded debrid keys when using the Debrid Providers fields below.
+  **Sample Add-on url** ```stremio://torrentio.strem.fun/providers=yts,eztv,rarbg,1337x,thepiratebay,kickasstorrents,torrentgalaxy,magnetdl,horriblesubs,nyaasi,tokyotosho,anidex|qualityfilter=brremux,scr,cam|limit=1|debridoptions=nodownloadlinks,nocatalog/manifest.json```
+- **TorBox API Key (Primary)**: TorBox debrid API key. The plugin injects this into the addon manifest at runtime and tries TorBox first.
+- **RealDebrid API Key (Fallback)**: RealDebrid API token. Used automatically when TorBox returns no streams.
+- **Debrid Account**: Tested with TorBox and Real Debrid. Keys can also remain embedded in the manifest URL for legacy setups.
 - **Library Paths**: At least one library path (Movies or Shows).
 
 ### Optional Settings

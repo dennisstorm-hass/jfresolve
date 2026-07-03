@@ -33,6 +33,16 @@ public class PluginConfiguration : BasePluginConfiguration
     /// </summary>
     public string AddonManifestUrl { get; set; } = string.Empty;
 
+    /// <summary>
+    /// TorBox API key (primary debrid provider). Injected into the addon manifest at runtime.
+    /// </summary>
+    public string TorBoxApiKey { get; set; } = string.Empty;
+
+    /// <summary>
+    /// RealDebrid API key (fallback debrid provider). Used when TorBox returns no streams.
+    /// </summary>
+    public string RealDebridApiKey { get; set; } = string.Empty;
+
     // Library Folder Path Configuration Mode
     /// <summary>
     /// Path configuration mode: Simple (same paths for search and auto-populate) or Advanced (separate paths)

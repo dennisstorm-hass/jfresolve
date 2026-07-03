@@ -1,4 +1,5 @@
 using System;
+using System.Text.RegularExpressions;
 
 namespace Jfresolve;
 
@@ -19,6 +20,36 @@ public static class UrlBuilder
             return "http://127.0.0.1:8096";
 
         return url.TrimEnd('/');
+    }
+
+    private static readonly Regex DebridKeyPattern = new(
+        @"\|(torbox|realdebrid|premiumize|alldebrid|debridlink|easydebrid|offcloud|putio)=[^|/]*",
+        RegexOptions.IgnoreCase | RegexOptions.Compiled);
+
+    /// <summary>
+    /// Removes Torrentio debrid provider keys from a manifest URL path.
+    /// </summary>
+    public static string StripDebridKeys(string? manifestUrl)
+    {
+        if (string.IsNullOrWhiteSpace(manifestUrl))
+            return string.Empty;
+
+        return DebridKeyPattern.Replace(manifestUrl, string.Empty);
+    }
+
+    /// <summary>
+    /// Appends a debrid provider key to a normalized manifest base URL.
+    /// </summary>
+    public static string InjectDebridKey(string? baseManifestUrl, string paramName, string apiKey)
+    {
+        if (string.IsNullOrWhiteSpace(baseManifestUrl) || string.IsNullOrWhiteSpace(paramName) || string.IsNullOrWhiteSpace(apiKey))
+            return string.Empty;
+
+        var normalized = NormalizeManifestUrl(StripDebridKeys(baseManifestUrl));
+        if (string.IsNullOrWhiteSpace(normalized))
+            return string.Empty;
+
+        return $"{normalized}|{paramName}={apiKey}";
     }
 
     /// <summary>
