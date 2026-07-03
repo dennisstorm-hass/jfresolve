@@ -43,24 +43,9 @@ public class JfresolveApiController : ControllerBase
 {
     private readonly ILogger<JfresolveApiController> _logger;
     private readonly IHttpClientFactory _httpClientFactory;
-    private readonly StreamQualitySelector _qualitySelector;
     private readonly Services.TorBoxStreamService _torBoxStreamService;
-    private readonly Services.CircuitBreaker _addonCircuitBreaker;
+    private readonly Services.PlaybackStreamResolver _playbackStreamResolver;
 
-    // Failover cache: tracks recent playback attempts with time windows
-    private static readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
-    private static DateTime _lastCacheCleanup = DateTime.UtcNow;
-
-    // Stream metadata cache: caches Stremio addon responses (stream lists) with TTL
-    // Key: stream URL, Value: (Serialized JSON, ExpiryTime)
-    private static readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
-    private static DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
-    
-    // Redirect URL cache: caches resolved redirect URLs (from addon, before following redirects) to avoid re-resolving on every Range request
-    // Key: cache key built from request parameters (type, id, season, episode, quality, index), Value: (Redirect URL, ExpiryTime)
-    private static readonly ConcurrentDictionary<string, (string RedirectUrl, DateTime Expiry)> _redirectUrlCache = new();
-    private static DateTime _lastRedirectUrlCacheCleanup = DateTime.UtcNow;
-    
     // Resolved URL cache: caches final resolved stream URLs (after following redirects) to speed up resume
     // Key: original redirect URL, Value: (Final URL after redirects, ExpiryTime)
     private static readonly ConcurrentDictionary<string, (string FinalUrl, DateTime Expiry)> _resolvedUrlCache = new();
@@ -80,19 +65,13 @@ public class JfresolveApiController : ControllerBase
     public JfresolveApiController(
         IHttpClientFactory httpClientFactory,
         ILogger<JfresolveApiController> logger,
-        ILogger<StreamQualitySelector> qualitySelectorLogger,
-        Services.TorBoxStreamService torBoxStreamService)
+        Services.TorBoxStreamService torBoxStreamService,
+        Services.PlaybackStreamResolver playbackStreamResolver)
     {
         _httpClientFactory = httpClientFactory;
         _logger = logger;
-        _qualitySelector = new StreamQualitySelector(qualitySelectorLogger);
         _torBoxStreamService = torBoxStreamService;
-        _addonCircuitBreaker = new Services.CircuitBreaker(
-            "StremioAddon",
-            NullLogger<Services.CircuitBreaker>.Instance,
-            Constants.CircuitBreakerFailureThreshold,
-            Constants.CircuitBreakerOpenDuration,
-            Constants.CircuitBreakerHalfOpenTimeout);
+        _playbackStreamResolver = playbackStreamResolver;
     }
 
     private Services.UserPreferencesService? GetUserPreferencesService()
@@ -233,17 +212,6 @@ public class JfresolveApiController : ControllerBase
         {
             // Best-effort only; missing optional headers should not break playback.
         }
-    }
-
-    /// <summary>
-    /// Tracks failover state with time windows
-    /// </summary>
-    private class FailoverState
-    {
-        public int CurrentIndex { get; set; }
-        public DateTime FirstAttempt { get; set; }
-        public DateTime LastAttempt { get; set; }
-        public int AttemptCount { get; set; }
     }
 
     /// <summary>
@@ -561,588 +529,21 @@ public class JfresolveApiController : ControllerBase
         Guid? userId = null,
         bool forceHls = false)
     {
-        // Validate series parameters
-        if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
-            {
-                _logger.LogWarning("Jfresolve: Missing season or episode for series");
-                return null;
-            }
-        }
-
-        _logger.LogInformation(
-            "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
-            type, id, season ?? "N/A", episode ?? "N/A"
-        );
-
-        // Check cache for resolved redirect URL first (avoids re-resolving on every Range request)
-        // Include preference in key so cached stream matches user's current HDR/DV choice
-        var redirectCacheKey = BuildRedirectUrlCacheKey(type, id, season, episode, quality, index, userId, preferHdrOverDolbyVision);
-        var now = DateTime.UtcNow;
-        CleanupRedirectUrlCacheIfNeeded();
-        
-        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
-        {
-            _logger.LogDebug("Jfresolve: Using cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
-                type, id, season ?? "N/A", episode ?? "N/A");
-            return await NormalizeStreamUpstreamUrlAsync(
-                cachedRedirect.RedirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id, forceHls);
-        }
-
-        // Get streams from addon (returns JsonDocument that must be kept alive)
-        JsonDocument? streamsDoc = null;
-        try
-        {
-            streamsDoc = await GetStreamsFromAddonWithDebridFallbackAsync(type, id, season, episode, config);
-            if (streamsDoc == null || streamsDoc.RootElement.GetArrayLength() == 0)
-            {
-                _logger.LogWarning("Jfresolve: No streams found for {Type}/{Id}", type, id);
-                return null;
-            }
-
-            // Select stream using quality selector and failover logic with immediate failover on HTTP errors
-            // Keep streamsDoc alive until we're done using the streams element
-            var redirectUrl = await SelectAndResolveStreamUrlWithFailoverAsync(
-                type, id, season, episode, quality, index, streamsDoc.RootElement, config, preferHdrOverDolbyVision);
-            
-            // Cache raw addon resolve URLs only; always re-run TorBox createstream normalization per request.
-            if (!string.IsNullOrWhiteSpace(redirectUrl))
-            {
-                if (TorBoxStreamService.ShouldCacheAddonRedirectUrl(redirectUrl))
-                {
-                    var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
-                    _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));
-                    _logger.LogDebug("Jfresolve: Cached addon redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
-                        type, id, season ?? "N/A", episode ?? "N/A");
-                }
-
-                redirectUrl = await NormalizeStreamUpstreamUrlAsync(
-                    redirectUrl, config.TorBoxApiKey, CancellationToken.None, type, id, forceHls);
-            }
-
-            return redirectUrl;
-        }
-        finally
-        {
-            // Dispose the JsonDocument after we're done with it
-            streamsDoc?.Dispose();
-        }
+        return await _playbackStreamResolver.ResolveStreamUrlAsync(
+            new StreamResolveRequest(
+                type,
+                id,
+                season,
+                episode,
+                quality,
+                index,
+                userId,
+                preferHdrOverDolbyVision,
+                forceHls,
+                ShouldPreferHlsForSeek(type, id)),
+            CancellationToken.None);
     }
 
-    /// <summary>
-    /// Gets streams from the Stremio addon, trying TorBox first then RealDebrid fallback.
-    /// Returns JsonDocument that must be disposed by the caller.
-    /// </summary>
-    private async Task<JsonDocument?> GetStreamsFromAddonWithDebridFallbackAsync(
-        string type,
-        string id,
-        string? season,
-        string? episode,
-        Configuration.PluginConfiguration config)
-    {
-        var hasTorBoxKey = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
-        var hasRealDebridKey = !string.IsNullOrWhiteSpace(config.RealDebridApiKey);
-
-        if (!hasTorBoxKey && !hasRealDebridKey)
-        {
-            var legacyManifest = UrlBuilder.NormalizeManifestUrl(config.AddonManifestUrl);
-            return await GetStreamsFromAddonAsync(type, id, season, episode, legacyManifest);
-        }
-
-        var baseManifest = UrlBuilder.NormalizeManifestUrl(
-            UrlBuilder.StripDebridKeys(config.AddonManifestUrl));
-
-        if (hasTorBoxKey)
-        {
-            var torBoxManifest = UrlBuilder.InjectDebridKey(
-                baseManifest, Constants.TorBoxDebridParam, config.TorBoxApiKey);
-            _logger.LogInformation("Jfresolve: Fetching streams via TorBox debrid provider");
-            var torBoxStreams = await GetStreamsFromAddonAsync(type, id, season, episode, torBoxManifest);
-            if (torBoxStreams != null && torBoxStreams.RootElement.GetArrayLength() > 0)
-            {
-                return torBoxStreams;
-            }
-
-            torBoxStreams?.Dispose();
-            _logger.LogWarning("Jfresolve: TorBox returned no streams for {Type}/{Id}, trying RealDebrid fallback", type, id);
-        }
-
-        if (hasRealDebridKey)
-        {
-            var realDebridManifest = UrlBuilder.InjectDebridKey(
-                baseManifest, Constants.RealDebridDebridParam, config.RealDebridApiKey);
-            _logger.LogInformation("Jfresolve: Fetching streams via RealDebrid debrid provider");
-            return await GetStreamsFromAddonAsync(type, id, season, episode, realDebridManifest);
-        }
-
-        return null;
-    }
-
-    /// <summary>
-    /// Gets streams from the Stremio addon with caching
-    /// Returns JsonDocument that must be disposed by the caller
-    /// </summary>
-    private async Task<JsonDocument?> GetStreamsFromAddonAsync(
-        string type,
-        string id,
-        string? season,
-        string? episode,
-        string manifestBase)
-        {
-            if (string.IsNullOrWhiteSpace(manifestBase))
-            {
-                return null;
-            }
-
-            // Build the stream endpoint URL
-        string streamUrl = BuildStreamUrl(manifestBase, type, id, season, episode);
-        if (string.IsNullOrWhiteSpace(streamUrl))
-        {
-            return null;
-        }
-
-        // Check cache first
-        var now = DateTime.UtcNow;
-        if (_streamMetadataCache.TryGetValue(streamUrl, out var cached) && cached.Expiry > now)
-        {
-            _logger.LogDebug("Jfresolve: Using cached stream metadata for {StreamUrl}", streamUrl);
-            try
-            {
-                // Parse cached JSON and extract streams array
-                var cachedDoc = JsonDocument.Parse(cached.Json);
-                if (cachedDoc.RootElement.TryGetProperty("streams", out var cachedStreams) && cachedStreams.GetArrayLength() > 0)
-                {
-                    var streamsJson = JsonSerializer.Serialize(cachedStreams);
-                    cachedDoc.Dispose();
-                    return JsonDocument.Parse(streamsJson);
-            }
-                cachedDoc.Dispose();
-            }
-            catch (Exception ex)
-            {
-                _logger.LogWarning(ex, "Jfresolve: Failed to parse cached stream metadata, fetching fresh");
-                // Fall through to fetch fresh data
-            }
-            }
-
-            _logger.LogInformation("Jfresolve: Requesting stream from addon: {StreamUrl}", streamUrl);
-
-            // Call the Stremio addon to get the stream (with circuit breaker protection)
-        var addonHttpClient = _httpClientFactory.CreateClient("Jfresolve.Addon");
-        addonHttpClient.Timeout = TimeSpan.FromSeconds(Constants.AddonRequestTimeoutSeconds);
-        addonHttpClient.DefaultRequestHeaders.Add("User-Agent", Constants.UserAgent);
-            var response = await _addonCircuitBreaker.ExecuteAsync(
-                async () => await addonHttpClient.GetStringAsync(streamUrl),
-                async () => { _logger.LogWarning("Circuit breaker open for Stremio addon, returning null"); return (string?)null; });
-            
-            if (string.IsNullOrEmpty(response))
-            {
-                _logger.LogWarning("Jfresolve: No response from addon (circuit breaker may be open)");
-                return null;
-            }
-
-            // Parse the JSON response
-        var json = JsonDocument.Parse(response);
-        
-        // Extract the streams array and create a new JsonDocument containing only the streams
-        // This allows us to dispose the original document while keeping the streams data alive
-        if (json.RootElement.TryGetProperty("streams", out var streams) && streams.GetArrayLength() > 0)
-            {
-            // Cache the full response for future requests
-            var expiry = now.Add(Constants.StreamMetadataCacheExpiry);
-            _streamMetadataCache.AddOrUpdate(streamUrl, (response, expiry), (key, oldValue) => (response, expiry));
-            
-            // Cleanup old cache entries if needed
-            CleanupStreamMetadataCacheIfNeeded();
-
-            // Clone the streams array into a new JsonDocument
-            // This creates an independent copy that can outlive the original document
-            var streamsJson = JsonSerializer.Serialize(streams);
-            json.Dispose(); // Dispose the original document
-            return JsonDocument.Parse(streamsJson);
-        }
-
-        json.Dispose();
-        return null;
-    }
-
-    /// <summary>
-    /// Cleans up expired entries from the stream metadata cache
-    /// </summary>
-    private static void CleanupStreamMetadataCacheIfNeeded()
-    {
-        var now = DateTime.UtcNow;
-        
-        // Only run cleanup periodically to avoid performance impact
-        if (now - _lastStreamCacheCleanup < Constants.StreamMetadataCacheCleanupInterval)
-        {
-            return;
-        }
-
-        _lastStreamCacheCleanup = now;
-        var keysToRemove = new List<string>();
-
-        // Remove expired entries
-        foreach (var kvp in _streamMetadataCache)
-        {
-            if (kvp.Value.Expiry <= now)
-            {
-                keysToRemove.Add(kvp.Key);
-            }
-        }
-
-        foreach (var key in keysToRemove)
-        {
-            _streamMetadataCache.TryRemove(key, out _);
-        }
-
-        // If still too large, remove oldest entries
-        if (_streamMetadataCache.Count > Constants.StreamMetadataCacheMaxSize)
-        {
-            var entriesToRemove = _streamMetadataCache.Count - Constants.StreamMetadataCacheMaxSize;
-            var sortedByExpiry = _streamMetadataCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
-            
-            foreach (var kvp in sortedByExpiry)
-            {
-                _streamMetadataCache.TryRemove(kvp.Key, out _);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Cleans up expired entries from the resolved URL cache
-    /// </summary>
-    private static void CleanupRedirectUrlCacheIfNeeded()
-    {
-        var now = DateTime.UtcNow;
-        
-        // Only run cleanup periodically to avoid performance impact
-        if (now - _lastRedirectUrlCacheCleanup < Constants.RedirectUrlCacheCleanupInterval)
-        {
-            return;
-        }
-
-        _lastRedirectUrlCacheCleanup = now;
-        var keysToRemove = new List<string>();
-
-        // Remove expired entries
-        foreach (var kvp in _redirectUrlCache)
-        {
-            if (kvp.Value.Expiry <= now)
-            {
-                keysToRemove.Add(kvp.Key);
-            }
-        }
-
-        foreach (var key in keysToRemove)
-        {
-            _redirectUrlCache.TryRemove(key, out _);
-        }
-
-        // If cache is still too large, remove oldest entries
-        if (_redirectUrlCache.Count > Constants.RedirectUrlCacheMaxSize)
-        {
-            var entriesToRemove = _redirectUrlCache.Count - Constants.RedirectUrlCacheMaxSize;
-            var sortedByExpiry = _redirectUrlCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
-            
-            foreach (var kvp in sortedByExpiry)
-            {
-                _redirectUrlCache.TryRemove(kvp.Key, out _);
-            }
-        }
-    }
-
-    private static void CleanupResolvedUrlCacheIfNeeded()
-    {
-        var now = DateTime.UtcNow;
-        
-        // Only run cleanup periodically to avoid performance impact
-        if (now - _lastResolvedUrlCacheCleanup < Constants.ResolvedUrlCacheCleanupInterval)
-        {
-            return;
-        }
-
-        _lastResolvedUrlCacheCleanup = now;
-        var keysToRemove = new List<string>();
-
-        // Remove expired entries
-        foreach (var kvp in _resolvedUrlCache)
-        {
-            if (kvp.Value.Expiry <= now)
-            {
-                keysToRemove.Add(kvp.Key);
-            }
-        }
-
-        foreach (var key in keysToRemove)
-        {
-            _resolvedUrlCache.TryRemove(key, out _);
-        }
-
-        // If still too large, remove oldest entries
-        if (_resolvedUrlCache.Count > Constants.ResolvedUrlCacheMaxSize)
-        {
-            var entriesToRemove = _resolvedUrlCache.Count - Constants.ResolvedUrlCacheMaxSize;
-            var sortedByExpiry = _resolvedUrlCache.OrderBy(kvp => kvp.Value.Expiry).Take(entriesToRemove);
-            
-            foreach (var kvp in sortedByExpiry)
-            {
-                _resolvedUrlCache.TryRemove(kvp.Key, out _);
-            }
-        }
-    }
-
-    /// <summary>
-    /// Builds the stream URL for the addon based on content type
-    /// All inputs should already be sanitized before calling this method
-    /// </summary>
-    private string BuildStreamUrl(string manifestBase, string type, string id, string? season, string? episode)
-    {
-        manifestBase = UrlBuilder.IncreaseStreamLimit(manifestBase);
-
-        // Ensure inputs are sanitized (defense in depth)
-        type = SanitizeInput(type);
-        id = SanitizeInput(id);
-        season = string.IsNullOrWhiteSpace(season) ? null : SanitizeInput(season);
-        episode = string.IsNullOrWhiteSpace(episode) ? null : SanitizeInput(episode);
-        
-        if (type.Equals("movie", StringComparison.OrdinalIgnoreCase))
-        {
-            // Use Uri.EscapeDataString for additional safety in URL construction
-            return $"{manifestBase}/stream/movie/{Uri.EscapeDataString(id)}.json";
-        }
-        else if (type.Equals("series", StringComparison.OrdinalIgnoreCase))
-        {
-            if (string.IsNullOrWhiteSpace(season) || string.IsNullOrWhiteSpace(episode))
-            {
-                return string.Empty; // Will be caught by caller
-            }
-            // Use Uri.EscapeDataString for additional safety in URL construction
-            return $"{manifestBase}/stream/series/{Uri.EscapeDataString(id)}:{Uri.EscapeDataString(season)}:{Uri.EscapeDataString(episode)}.json";
-        }
-        else
-        {
-            // Use Uri.EscapeDataString for additional safety in URL construction
-            return $"{manifestBase}/stream/{Uri.EscapeDataString(type)}/{Uri.EscapeDataString(id)}.json";
-            }
-    }
-
-    /// <summary>
-    /// Selects a stream and resolves its URL using quality selector and failover logic
-    /// </summary>
-    private async Task<string?> SelectAndResolveStreamUrlAsync(
-        string type,
-        string id,
-        string? season,
-        string? episode,
-        string? quality,
-        int? index,
-        JsonElement streams,
-        Configuration.PluginConfiguration config,
-        bool preferHdrOverDolbyVision)
-    {
-            // FAILOVER LOGIC: Determine effective index with time-window based retry for dead links
-            var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
-            int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
-            var preferSeekableContainers = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
-
-            // Select the stream using failover-adjusted index
-        var selectedStream = _qualitySelector.SelectStreamByQuality(
-            streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision, preferSeekableContainers);
-            if (selectedStream == null)
-            {
-                _logger.LogWarning("Jfresolve: Could not select a stream for {Type}/{Id}", type, id);
-            return null;
-            }
-
-            if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
-            {
-                _logger.LogWarning("Jfresolve: No URL property in stream response");
-            return null;
-            }
-
-            var redirectUrl = urlProperty.GetString();
-            if (string.IsNullOrWhiteSpace(redirectUrl))
-            {
-                _logger.LogWarning("Jfresolve: Empty stream URL received");
-            return null;
-            }
-
-            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl}", type, id, redirectUrl);
-
-        // Validate URL to prevent SSRF attacks
-        if (!IsValidStreamUrl(redirectUrl))
-            {
-            _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL: {RedirectUrl}", redirectUrl);
-            return null;
-        }
-
-        return redirectUrl;
-    }
-
-    /// <summary>
-    /// Selects a stream with immediate failover on HTTP errors (4xx, 5xx)
-    /// Tries the next quality version if the current one fails
-    /// </summary>
-    private async Task<string?> SelectAndResolveStreamUrlWithFailoverAsync(
-        string type,
-        string id,
-        string? season,
-        string? episode,
-        string? quality,
-        int? index,
-        JsonElement streams,
-        Configuration.PluginConfiguration config,
-        bool preferHdrOverDolbyVision)
-    {
-        var cacheKey = BuildFailoverCacheKey(type, id, season, episode, quality);
-        var streamArray = streams.EnumerateArray().ToList();
-        var maxAttempts = Math.Min(streamArray.Count, 5); // Limit to 5 attempts to avoid infinite loops
-        var attemptedIndices = new HashSet<int>();
-        var preferSeekableContainers = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
-        
-        for (int attempt = 0; attempt < maxAttempts; attempt++)
-        {
-            // Determine failover index
-            int effectiveIndex = DetermineFailoverIndex(cacheKey, index, quality, streams, config.PreferredQuality, type);
-            
-            // Skip if we've already tried this index
-            if (attemptedIndices.Contains(effectiveIndex))
-            {
-                // Try next index
-                effectiveIndex = (effectiveIndex + 1) % streamArray.Count;
-            }
-            attemptedIndices.Add(effectiveIndex);
-            
-            // Select the stream
-            var selectedStream = _qualitySelector.SelectStreamByQuality(
-                streams, config.PreferredQuality, quality, effectiveIndex, preferHdrOverDolbyVision, preferSeekableContainers);
-            if (selectedStream == null)
-            {
-                _logger.LogWarning("Jfresolve: Could not select stream at index {Index} for {Type}/{Id}", effectiveIndex, type, id);
-                continue; // Try next stream
-            }
-
-            if (!selectedStream.Value.TryGetProperty("url", out var urlProperty))
-            {
-                _logger.LogWarning("Jfresolve: No URL property in stream response at index {Index}", effectiveIndex);
-                continue; // Try next stream
-            }
-
-            var redirectUrl = urlProperty.GetString();
-            if (string.IsNullOrWhiteSpace(redirectUrl))
-            {
-                _logger.LogWarning("Jfresolve: Empty stream URL at index {Index}", effectiveIndex);
-                continue; // Try next stream
-            }
-
-            // Validate URL to prevent SSRF attacks
-            if (!IsValidStreamUrl(redirectUrl))
-            {
-                _logger.LogWarning("Jfresolve: Invalid or unsafe redirect URL at index {Index}: {RedirectUrl}", effectiveIndex, redirectUrl);
-                continue; // Try next stream
-            }
-
-            // Test the stream URL with a HEAD request only if we have multiple streams and this is the first attempt
-            // This helps avoid dead links but adds minimal overhead
-            if (attempt == 0 && streamArray.Count > 1)
-            {
-                var isValid = await TestStreamUrlAsync(redirectUrl);
-                if (!isValid)
-                {
-                    _logger.LogWarning("Jfresolve: Stream URL at index {Index} failed validation, trying next stream", effectiveIndex);
-                    // Mark this index as failed in failover cache for future requests
-                    MarkStreamAsFailed(cacheKey, effectiveIndex);
-                    continue; // Try next stream
-                }
-            }
-
-            _logger.LogInformation("Jfresolve: Resolved {Type}/{Id} to {RedirectUrl} (attempt {Attempt}, index {Index})", 
-                type, id, redirectUrl, attempt + 1, effectiveIndex);
-            return redirectUrl;
-        }
-
-        _logger.LogError("Jfresolve: Failed to find a valid stream after {Attempts} attempts for {Type}/{Id}", 
-            maxAttempts, type, id);
-        return null;
-    }
-
-    /// <summary>
-    /// Tests if a stream URL is accessible by making a HEAD request
-    /// Returns true if the URL is accessible (2xx status), false otherwise
-    /// </summary>
-    private async Task<bool> TestStreamUrlAsync(string url)
-    {
-        try
-        {
-            var testClient = _httpClientFactory.CreateClient("Jfresolve.Stream");
-            testClient.Timeout = TimeSpan.FromSeconds(10); // Short timeout for testing
-            
-            using var request = new HttpRequestMessage(HttpMethod.Head, url);
-            request.Headers.Add("User-Agent", Constants.UserAgent);
-            
-            var response = await testClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-            
-            // Consider 2xx and 3xx as valid (redirects are OK)
-            var isValid = (int)response.StatusCode >= 200 && (int)response.StatusCode < 400;
-            
-            if (!isValid)
-            {
-                _logger.LogDebug("Jfresolve: Stream URL test failed with status {StatusCode}: {Url}", response.StatusCode, url);
-            }
-            
-            return isValid;
-        }
-        catch (Exception ex)
-        {
-            _logger.LogDebug(ex, "Jfresolve: Stream URL test failed for {Url}", url);
-            return false;
-        }
-    }
-
-    /// <summary>
-    /// Marks a stream index as failed in the failover cache to avoid retrying it immediately
-    /// </summary>
-    private void MarkStreamAsFailed(string cacheKey, int failedIndex)
-    {
-        if (_failoverCache.TryGetValue(cacheKey, out var state))
-        {
-            // Update the state to indicate this index failed
-            state.CurrentIndex = (failedIndex + 1) % 100; // Move to next index (wrapped)
-            state.LastAttempt = DateTime.UtcNow;
-            state.AttemptCount++;
-        }
-    }
-
-    /// <summary>
-    /// Rewrites Torrentio TorBox resolve URLs to TorBox createstream HLS or requestdl permalinks when possible.
-    /// </summary>
-    private async Task<string> NormalizeStreamUpstreamUrlAsync(
-        string redirectUrl,
-        string? torBoxApiKey,
-        CancellationToken cancellationToken,
-        string? type = null,
-        string? id = null,
-        bool forceHls = false)
-    {
-        if (string.IsNullOrWhiteSpace(redirectUrl))
-            return redirectUrl;
-
-        var preferHlsForSeek = forceHls
-            || (!string.IsNullOrWhiteSpace(type)
-                && !string.IsNullOrWhiteSpace(id)
-                && ShouldPreferHlsForSeek(type, id));
-
-        if (forceHls)
-        {
-            _logger.LogInformation("Jfresolve: Forcing TorBox HLS delivery for {Type}/{Id}", type, id);
-        }
-
-        var target = await _torBoxStreamService.TryResolveTorBoxStreamAsync(
-            redirectUrl, torBoxApiKey, preferHlsForSeek, forceHls, cancellationToken);
-        return target?.Url ?? redirectUrl;
-    }
 
     private static readonly ConcurrentDictionary<string, (DateTime Started, long Bytes)> _activeStreamTransfers = new();
 
@@ -2452,277 +1853,59 @@ public class JfresolveApiController : ControllerBase
         return null;
     }
 
-
-    /// <summary>
-    /// Builds a cache key for failover tracking
-    /// Format: type:id[:season:episode]:quality
-    /// </summary>
-    private string BuildFailoverCacheKey(string type, string id, string? season, string? episode, string? quality)
-    {
-        var key = $"{type}:{id}";
-
-        if (!string.IsNullOrEmpty(season) && !string.IsNullOrEmpty(episode))
-        {
-            key += $":{season}:{episode}";
-        }
-
-        key += $":{quality ?? "default"}";
-
-        return key;
-    }
-
-    /// <summary>
-    /// Builds a cache key for redirect URL caching (includes index, user, and HDR/DV preference so cache matches user choice).
-    /// </summary>
-    private string BuildRedirectUrlCacheKey(string type, string id, string? season, string? episode, string? quality, int? index, Guid? userId = null, bool preferHdrOverDolbyVision = false)
-    {
-        var key = $"{type}:{id}";
-
-        if (!string.IsNullOrEmpty(season) && !string.IsNullOrEmpty(episode))
-        {
-            key += $":{season}:{episode}";
-        }
-
-        key += $":{quality ?? "default"}";
-        
-        if (index.HasValue)
-        {
-            key += $":index{index.Value}";
-        }
-
-        if (userId.HasValue)
-        {
-            key += $":u{userId.Value:N}";
-        }
-
-        key += preferHdrOverDolbyVision ? ":hdr" : ":dv";
-
-        return key;
-    }
-
-    /// <summary>
-    /// Determines the effective stream index using time-window failover logic
-    /// - Grace period (0-45s): Keep serving same link to allow buffering
-    /// - Failover window (45s-2min): Try next link on new request
-    /// - Reset (>2min): Assume success, reset to original index
-    /// </summary>
-    private int DetermineFailoverIndex(
-        string cacheKey,
-        int? requestedIndex,
-        string? quality,
-        JsonElement streams,
-        string preferredQuality,
-        string type)
-    {
-        var config = GetPluginConfiguration();
-        if (config == null)
-        {
-            return requestedIndex ?? 0;
-        }
-
-        // Check if failover is enabled for this content type
-        bool failoverEnabled = type.Equals("movie", StringComparison.OrdinalIgnoreCase)
-            ? config.EnableMovieFailover
-            : config.EnableShowFailover;
-
-        if (!failoverEnabled)
-        {
-            _logger.LogDebug("Jfresolve FAILOVER: Disabled for {Type}, using requested index {Index}", type, requestedIndex ?? 0);
-            return requestedIndex ?? 0;
-        }
-
-        int effectiveIndex = requestedIndex ?? 0;
-
-        // Get total available streams for this quality
-        var streamArray = streams.EnumerateArray().ToList();
-        var totalStreams = streamArray.Count;
-
-        // If quality is specified, count only matching streams
-        if (!string.IsNullOrEmpty(quality))
-        {
-            var filteredStreams = _qualitySelector.FilterStreamsByQuality(streamArray, quality);
-            totalStreams = filteredStreams.Count;
-
-            if (totalStreams == 0)
-            {
-                _logger.LogWarning(
-                    "Jfresolve FAILOVER: No streams found for quality {Quality}, falling back to discovery",
-                    quality
-                );
-                totalStreams = streamArray.Count;
-            }
-        }
-
-        // If only one stream available, no need for failover
-        if (totalStreams <= 1)
-        {
-            _logger.LogDebug("Jfresolve FAILOVER: Only {Count} stream(s) available, no failover needed", totalStreams);
-            return effectiveIndex;
-        }
-
-        var now = DateTime.UtcNow;
-        var gracePeriod = TimeSpan.FromSeconds(config.FailoverGracePeriodSeconds);
-        var resetWindow = TimeSpan.FromSeconds(config.FailoverWindowSeconds);
-
-        // Check failover state
-        if (_failoverCache.TryGetValue(cacheKey, out var state))
-        {
-            var timeSinceFirstAttempt = now - state.FirstAttempt;
-            var timeSinceLastAttempt = now - state.LastAttempt;
-
-            // Reset window: assume success, clear state
-            if (timeSinceLastAttempt > resetWindow)
-            {
-                _logger.LogInformation(
-                    "Jfresolve FAILOVER: Reset for {Key} - {Time:F1}s since last attempt (success assumed)",
-                    cacheKey, timeSinceLastAttempt.TotalSeconds
-                );
-                _failoverCache.TryRemove(cacheKey, out _);
-                effectiveIndex = requestedIndex ?? 0;
-
-                // Create new state
-                _failoverCache[cacheKey] = new FailoverState
-                {
-                    CurrentIndex = effectiveIndex,
-                    FirstAttempt = now,
-                    LastAttempt = now,
-                    AttemptCount = 1
-                };
-
-                return effectiveIndex;
-            }
-
-            // Grace period: keep serving same link to allow buffering
-            if (timeSinceFirstAttempt < gracePeriod)
-            {
-                _logger.LogDebug(
-                    "Jfresolve FAILOVER: Grace period for {Key} - {Time:F1}s/{Grace}s elapsed, serving index {Index} (attempt #{Attempt})",
-                    cacheKey, timeSinceFirstAttempt.TotalSeconds, gracePeriod.TotalSeconds, state.CurrentIndex, state.AttemptCount + 1
-                );
-
-                // Update last attempt time and count
-                state.LastAttempt = now;
-                state.AttemptCount++;
-
-                return state.CurrentIndex;
-            }
-
-            // Failover window: try next link
-            effectiveIndex = state.CurrentIndex + 1;
-
-            // Wrap around if exhausted
-            if (effectiveIndex >= totalStreams)
-            {
-                effectiveIndex = 0;
-                _logger.LogWarning(
-                    "Jfresolve FAILOVER: Exhausted all {Count} streams for {Key}, wrapping to index 0 (attempt #{Attempt})",
-                    totalStreams, cacheKey, state.AttemptCount + 1
-                );
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Jfresolve FAILOVER: Grace period expired for {Key}. " +
-                    "Switching from index {OldIndex} to {NewIndex}/{Total} (attempt #{Attempt})",
-                    cacheKey, state.CurrentIndex, effectiveIndex, totalStreams, state.AttemptCount + 1
-                );
-            }
-
-            // Update state - new first attempt for this index
-            state.CurrentIndex = effectiveIndex;
-            state.FirstAttempt = now;  // Reset first attempt for new link
-            state.LastAttempt = now;
-            state.AttemptCount++;
-
-            return effectiveIndex;
-        }
-        else
-        {
-            // First attempt for this content/quality
-            _logger.LogInformation(
-                "Jfresolve FAILOVER: First attempt for {Key}, serving index {Index}",
-                cacheKey, effectiveIndex
-            );
-
-            _failoverCache[cacheKey] = new FailoverState
-            {
-                CurrentIndex = effectiveIndex,
-                FirstAttempt = now,
-                LastAttempt = now,
-                AttemptCount = 1
-            };
-
-            return effectiveIndex;
-        }
-    }
-
-    /// <summary>
-    /// Handles stream errors by distinguishing between different failure types and returning appropriate HTTP status codes
-    /// </summary>
     private IActionResult HandleStreamError(HttpResponseMessage response, string redirectUrl, string type, string id)
     {
         var statusCode = (int)response.StatusCode;
         string errorMessage;
         int httpStatusCode;
-        
-        // Distinguish between different error types
-        if (statusCode == 401 || statusCode == 403)
+
+        if (statusCode is 401 or 403)
         {
-            // Authentication/Authorization errors
             errorMessage = "Authentication failed: Stream server requires authentication or access is denied";
-            httpStatusCode = 502; // Bad Gateway - upstream authentication issue
-            _logger.LogWarning("Jfresolve: Authentication error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 502;
+            _logger.LogWarning("Jfresolve: Authentication error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}",
                 statusCode, type, id, redirectUrl);
         }
         else if (statusCode == 404)
         {
-            // Not found errors
             errorMessage = "Stream not found: The requested stream is no longer available";
-            httpStatusCode = 404; // Not Found - pass through to client
-            _logger.LogWarning("Jfresolve: Stream not found (404) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 404;
+            _logger.LogWarning("Jfresolve: Stream not found (404) for {Type}/{Id} from {RedirectUrl}",
                 type, id, redirectUrl);
         }
         else if (statusCode >= 500 && statusCode < 600)
         {
-            // Server errors
             errorMessage = "Stream server error: The stream server is experiencing issues";
-            httpStatusCode = 502; // Bad Gateway - upstream server error
-            _logger.LogError("Jfresolve: Stream server error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 502;
+            _logger.LogError("Jfresolve: Stream server error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}",
                 statusCode, type, id, redirectUrl);
         }
         else if (statusCode == 429)
         {
-            // Rate limiting
             errorMessage = "Rate limit exceeded: Too many requests to stream server";
-            httpStatusCode = 503; // Service Unavailable
-            _logger.LogWarning("Jfresolve: Rate limit (429) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 503;
+            _logger.LogWarning("Jfresolve: Rate limit (429) for {Type}/{Id} from {RedirectUrl}",
                 type, id, redirectUrl);
         }
         else if (statusCode >= 400 && statusCode < 500)
         {
-            // Other client errors
             errorMessage = $"Stream request error: The stream server rejected the request (HTTP {statusCode})";
-            httpStatusCode = 502; // Bad Gateway
-            _logger.LogWarning("Jfresolve: Client error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 502;
+            _logger.LogWarning("Jfresolve: Client error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}",
                 statusCode, type, id, redirectUrl);
         }
         else
         {
-            // Unknown errors
             errorMessage = $"Unexpected stream error: HTTP {statusCode}";
-            httpStatusCode = 502; // Bad Gateway
-            _logger.LogError("Jfresolve: Unexpected error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}", 
+            httpStatusCode = 502;
+            _logger.LogError("Jfresolve: Unexpected error ({StatusCode}) for {Type}/{Id} from {RedirectUrl}",
                 statusCode, type, id, redirectUrl);
         }
-        
+
         response.Dispose();
         return StatusCode(httpStatusCode, errorMessage);
     }
 
-    /// <summary>
-    /// Executes a stream HTTP request with retry logic for transient failures
-    /// Only retries initial connection failures, not during streaming
-    /// </summary>
     private async Task<HttpResponseMessage?> ExecuteStreamRequestWithRetryAsync(
         HttpClient client,
         Func<HttpRequestMessage> requestFactory,
@@ -2730,121 +1913,52 @@ public class JfresolveApiController : ControllerBase
         CancellationToken cancellationToken)
     {
         Exception? lastException = null;
-        for (int attempt = 0; attempt < Constants.MaxStreamRetryAttempts; attempt++)
+        for (var attempt = 0; attempt < Constants.MaxStreamRetryAttempts; attempt++)
         {
             HttpRequestMessage? request = null;
             try
             {
                 request = requestFactory();
                 var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
-                
-                // Return 2xx (success) and 3xx (redirect) responses immediately - these are valid
+
                 if (response.IsSuccessStatusCode || ((int)response.StatusCode >= 300 && (int)response.StatusCode < 400))
-                {
-                    // Request will be disposed when response is disposed
                     return response;
-                }
-                
-                // Don't retry on 4xx errors (client errors) - these are permanent failures
-                if ((int)response.StatusCode >= 400 && (int)response.StatusCode < 500)
-                {
-                    _logger.LogWarning("Jfresolve: Stream {Operation} failed with client error {StatusCode}, not retrying", 
-                        operationName, response.StatusCode);
-                    // Request will be disposed when response is disposed
-                    return response; // Return the error response
-                }
-                
-                // Retry on 5xx errors (server errors)
-                if ((int)response.StatusCode >= 500)
-                {
-                    if (attempt < Constants.MaxStreamRetryAttempts - 1)
-                    {
-                        // Retry on server errors
-                        var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                        _logger.LogWarning(
-                            "Jfresolve: Stream {Operation} failed with {StatusCode}, retrying in {Delay}ms (attempt {Attempt}/{Max})",
-                            operationName, response.StatusCode, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
-                        response.Dispose();
-                        request.Dispose();
-                        request = null;
-                        await Task.Delay(delay, cancellationToken);
-                        continue;
-                    }
-                    
-                    // Final attempt failed, return the error response
+
+                if ((int)response.StatusCode is >= 400 and < 500)
                     return response;
-                }
-            }
-            catch (HttpRequestException ex)
-            {
-                lastException = ex;
-                if (attempt < Constants.MaxStreamRetryAttempts - 1)
+
+                if ((int)response.StatusCode >= 500 && attempt < Constants.MaxStreamRetryAttempts - 1)
                 {
-                    // Retry on network errors
-                    request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
                     _logger.LogWarning(
-                        "Jfresolve: Stream {Operation} network error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
-                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
+                        "Jfresolve: Stream {Operation} failed with {StatusCode}, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                        operationName, response.StatusCode, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
+                    response.Dispose();
+                    request.Dispose();
+                    request = null;
                     await Task.Delay(delay, cancellationToken);
+                    continue;
                 }
+
+                return response;
             }
-            catch (TaskCanceledException ex)
+            catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or TimeoutException or IOException)
             {
                 lastException = ex;
-                // Retry on timeout (but only if not cancelled by user)
                 if (cancellationToken.IsCancellationRequested)
                 {
                     request?.Dispose();
-                    throw; // User cancelled, don't retry
+                    throw;
                 }
-                
+
                 if (attempt < Constants.MaxStreamRetryAttempts - 1)
                 {
                     request?.Dispose();
                     var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
                     _logger.LogWarning(
-                        "Jfresolve: Stream {Operation} timeout, retrying in {Delay}ms (attempt {Attempt}/{Max})",
+                        ex,
+                        "Jfresolve: Stream {Operation} failed, retrying in {Delay}ms (attempt {Attempt}/{Max})",
                         operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts);
-                    await Task.Delay(delay, cancellationToken);
-                }
-            }
-            catch (TimeoutException ex)
-            {
-                lastException = ex;
-                if (attempt < Constants.MaxStreamRetryAttempts - 1)
-                {
-                    request?.Dispose();
-                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
-                        "Jfresolve: Stream {Operation} timeout exception, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
-                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
-                    await Task.Delay(delay, cancellationToken);
-                }
-            }
-            catch (IOException ex)
-            {
-                lastException = ex;
-                if (attempt < Constants.MaxStreamRetryAttempts - 1)
-                {
-                    request?.Dispose();
-                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
-                        "Jfresolve: Stream {Operation} IO error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
-                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
-                    await Task.Delay(delay, cancellationToken);
-                }
-            }
-            catch (Exception ex)
-            {
-                lastException = ex;
-                if (attempt < Constants.MaxStreamRetryAttempts - 1)
-                {
-                    request?.Dispose();
-                    var delay = Constants.StreamRetryDelays[Math.Min(attempt, Constants.StreamRetryDelays.Length - 1)];
-                    _logger.LogWarning(
-                        "Jfresolve: Stream {Operation} unexpected error, retrying in {Delay}ms (attempt {Attempt}/{Max}): {Error}",
-                        operationName, delay, attempt + 1, Constants.MaxStreamRetryAttempts, ex.Message);
                     await Task.Delay(delay, cancellationToken);
                 }
             }
@@ -2852,59 +1966,14 @@ public class JfresolveApiController : ControllerBase
 
         if (lastException != null)
         {
-            _logger.LogError(lastException, "Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts. Last error: {Error}", 
-                operationName, Constants.MaxStreamRetryAttempts, lastException.Message);
-        }
-        else
-        {
-            _logger.LogError("Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts (no exception details available)", 
+            _logger.LogError(lastException,
+                "Jfresolve: Stream {Operation} failed after {MaxAttempts} attempts",
                 operationName, Constants.MaxStreamRetryAttempts);
         }
+
         return null;
     }
 
-    /// <summary>
-    /// Cleans up old entries from the failover cache to prevent memory leaks
-    /// Runs periodically (every hour) to remove entries older than 24 hours
-    /// </summary>
-    private static void CleanupFailoverCacheIfNeeded()
-    {
-        var now = DateTime.UtcNow;
-        
-        // Only run cleanup once per hour to avoid performance impact
-        if (now - _lastCacheCleanup < Constants.FailoverCacheCleanupInterval)
-        {
-            return;
-        }
-
-        _lastCacheCleanup = now;
-        var cutoffTime = now - Constants.FailoverCacheEntryMaxAge;
-        var keysToRemove = new List<string>();
-
-        foreach (var kvp in _failoverCache)
-        {
-            if (kvp.Value.LastAttempt < cutoffTime)
-            {
-                keysToRemove.Add(kvp.Key);
-            }
-        }
-
-        foreach (var key in keysToRemove)
-        {
-            _failoverCache.TryRemove(key, out _);
-        }
-
-        if (keysToRemove.Count > 0)
-        {
-            // Use a simple logger if available, otherwise skip logging to avoid dependency issues
-            // Logging would require injecting ILogger, which would break the static method pattern
-            // This cleanup is silent to maintain performance
-        }
-    }
-
-    /// <summary>
-    /// Sanitizes user input by removing potentially dangerous characters
-    /// </summary>
     /// <summary>
     /// Checks if the request is authorized to access the stream endpoint
     /// Allows requests from localhost, server's own IP (including Docker), or authenticated Jellyfin users

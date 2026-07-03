@@ -63,7 +63,8 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         CancellationTokenSource cancellationTokenSource,
         string? workingDirectory = null)
     {
-        if (commandLineArguments.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
+        if ((commandLineArguments.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
+             || commandLineArguments.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase))
             && TryParseSeekTicks(commandLineArguments, out var seekTicks))
         {
             SeekPositionCache.SetPending(seekTicks);
