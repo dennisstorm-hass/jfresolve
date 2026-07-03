@@ -552,31 +552,25 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (!string.IsNullOrWhiteSpace(config?.TorBoxApiKey))
         {
             info.Container = null;
-            ApplyTorBoxStreamPath(info);
+            StripTorBoxStreamPath(info);
+            TryCacheTorBoxRuntime(info);
         }
 
         ApplyEstimatedSize(info);
     }
 
     /// <summary>
-    /// TorBox items always use stream.m3u8 in the media path so FFmpeg selects the HLS demuxer on seek.
-    /// Initial playback redirects to the direct MKV resolve URL; seeks are served as HLS at the same path.
+    /// Keep the direct MKV resolve URL for initial playback. stream.m3u8 is only used during seek.
     /// </summary>
-    private void ApplyTorBoxStreamPath(MediaSourceInfo info)
+    private static void StripTorBoxStreamPath(MediaSourceInfo info)
     {
         if (string.IsNullOrEmpty(info.Path)
-            || !info.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
-            || info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
+            || !info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
         {
             return;
         }
 
-        TryCacheTorBoxRuntime(info);
-
-        var queryIndex = info.Path.IndexOf('?');
-        var pathOnly = queryIndex >= 0 ? info.Path[..queryIndex] : info.Path;
-        var query = queryIndex >= 0 ? info.Path[queryIndex..] : string.Empty;
-        info.Path = $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
+        info.Path = info.Path.Replace("/stream.m3u8", "", StringComparison.OrdinalIgnoreCase);
     }
 
     private static void TryCacheTorBoxRuntime(MediaSourceInfo info)

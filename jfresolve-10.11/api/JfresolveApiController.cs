@@ -336,12 +336,18 @@ public class JfresolveApiController : ControllerBase
         var isHlsPath = Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true;
         var seekHls = !string.IsNullOrWhiteSpace(config.TorBoxApiKey) && DetectTorBoxSeekHls(type, id);
 
+        if (!seekHls)
+        {
+            SeekPositionCache.ClearSeekState();
+            ClearActiveHlsPlayback(type, id);
+        }
+
         if (isHlsPath && !seekHls)
         {
             _logger.LogInformation(
-                "Jfresolve: Initial TorBox playback for {Type}/{Id} — redirecting stream.m3u8 to direct MKV resolve path",
+                "Jfresolve: stream.m3u8 request without seek for {Type}/{Id} — serving direct MKV",
                 type, id);
-            return RedirectToDirectResolvePath(type, id);
+            forceHls = false;
         }
 
         if (seekHls)
@@ -1163,7 +1169,7 @@ public class JfresolveApiController : ControllerBase
 
     private bool DetectTorBoxSeekHls(string type, string id)
     {
-        if (SeekPositionCache.ShouldUseHlsPath())
+        if (SeekPositionCache.TryPeekPending() is > 0)
             return true;
 
         var key = BuildStreamSessionKey(type, id);
@@ -1181,7 +1187,12 @@ public class JfresolveApiController : ControllerBase
 
         return _activeStreamTransfers.TryGetValue(key, out var state)
             && state.Bytes >= SeekDetectionMinBytes
-            && DateTime.UtcNow - state.Started < TimeSpan.FromHours(4);
+            && DateTime.UtcNow - state.Started < TimeSpan.FromMinutes(2);
+    }
+
+    private static void ClearActiveHlsPlayback(string type, string id)
+    {
+        _activeHlsPlayback.TryRemove(BuildStreamSessionKey(type, id), out _);
     }
 
     private IActionResult RedirectToDirectResolvePath(string type, string id)
@@ -1314,38 +1325,41 @@ public class JfresolveApiController : ControllerBase
         return $"{resourceUrl}{separator}{query}";
     }
 
-    private static string FixTorBoxExtInfDurations(string playlist, long totalRuntimeTicks)
+    private sealed class HlsMediaSegment
     {
-        var lines = playlist.Split('\n');
-        var segmentUrlCount = 0;
-        foreach (var line in lines)
-        {
-            var trimmed = line.TrimEnd('\r').Trim();
-            if (trimmed.Length > 0 && !trimmed.StartsWith('#'))
-                segmentUrlCount++;
-        }
+        public string Url { get; init; } = string.Empty;
+        public double DurationSeconds { get; set; }
+    }
 
-        if (segmentUrlCount <= 0)
-            return playlist;
+    private static List<HlsMediaSegment> ParseHlsMediaSegments(string playlist)
+    {
+        var segments = new List<HlsMediaSegment>();
+        double? pendingDuration = null;
 
-        var totalSeconds = totalRuntimeTicks / 10_000_000.0;
-        var segmentSeconds = totalSeconds / segmentUrlCount;
-        var sb = new StringBuilder(playlist.Length + 64);
-
-        foreach (var line in lines)
+        foreach (var line in playlist.Split('\n'))
         {
             var trimmed = line.TrimEnd('\r');
             if (trimmed.StartsWith("#EXTINF:", StringComparison.OrdinalIgnoreCase))
             {
-                sb.Append(CultureInfo.InvariantCulture, $"#EXTINF:{segmentSeconds:F3},\n");
+                var comma = trimmed.IndexOf(',');
+                var durationPart = comma > 8 ? trimmed[8..comma] : trimmed[8..];
+                if (double.TryParse(durationPart, NumberStyles.Float, CultureInfo.InvariantCulture, out var duration))
+                    pendingDuration = duration;
+                continue;
             }
-            else
+
+            if (trimmed.Length > 0 && !trimmed.StartsWith('#'))
             {
-                sb.AppendLine(trimmed);
+                segments.Add(new HlsMediaSegment
+                {
+                    Url = trimmed,
+                    DurationSeconds = pendingDuration ?? 0
+                });
+                pendingDuration = null;
             }
         }
 
-        return sb.ToString();
+        return segments;
     }
 
     private static string RewriteHlsPlaylist(
@@ -1353,11 +1367,79 @@ public class JfresolveApiController : ControllerBase
         string playlistUrl,
         string proxyBaseUrl,
         bool useDirectSegmentUrls,
-        long? totalRuntimeTicks = null)
+        long? totalRuntimeTicks = null,
+        long? seekTicks = null)
     {
-        if (useDirectSegmentUrls && totalRuntimeTicks is > 0)
-            playlist = FixTorBoxExtInfDurations(playlist, totalRuntimeTicks.Value);
+        if (!useDirectSegmentUrls)
+        {
+            return RewriteHlsPlaylistPassthrough(playlist, playlistUrl, proxyBaseUrl);
+        }
 
+        var segments = ParseHlsMediaSegments(playlist);
+        if (segments.Count == 0)
+            return playlist;
+
+        var segmentSeconds = totalRuntimeTicks is > 0
+            ? totalRuntimeTicks.Value / 10_000_000.0 / segments.Count
+            : segments[0].DurationSeconds > 0
+                ? segments[0].DurationSeconds
+                : 5.0;
+
+        var trimFrom = 0;
+        if (seekTicks is > 0)
+        {
+            var seekSeconds = seekTicks.Value / 10_000_000.0;
+            trimFrom = (int)Math.Floor(seekSeconds / segmentSeconds);
+            if (trimFrom < 0)
+                trimFrom = 0;
+            if (trimFrom >= segments.Count)
+                trimFrom = Math.Max(0, segments.Count - 1);
+        }
+
+        Uri.TryCreate(playlistUrl, UriKind.Absolute, out var playlistUri);
+        var targetDuration = Math.Max(1, (int)Math.Ceiling(segmentSeconds));
+        var sb = new StringBuilder(playlist.Length + 256);
+        sb.AppendLine("#EXTM3U");
+        sb.AppendLine("#EXT-X-VERSION:3");
+        sb.AppendLine(CultureInfo.InvariantCulture, $"#EXT-X-TARGETDURATION:{targetDuration}");
+        if (trimFrom > 0)
+            sb.AppendLine($"#EXT-X-MEDIA-SEQUENCE:{trimFrom}");
+        sb.AppendLine("#EXT-X-PLAYLIST-TYPE:VOD");
+
+        for (var i = trimFrom; i < segments.Count; i++)
+        {
+            var segmentUrl = segments[i].Url;
+            string absoluteUrl;
+            if (Uri.TryCreate(segmentUrl, UriKind.Absolute, out var absoluteUri))
+            {
+                absoluteUrl = absoluteUri.ToString();
+            }
+            else if (playlistUri != null && Uri.TryCreate(playlistUri, segmentUrl, out var relativeUri))
+            {
+                absoluteUrl = relativeUri.ToString();
+            }
+            else
+            {
+                absoluteUrl = segmentUrl;
+            }
+
+            absoluteUrl = AppendTorBoxPlaylistQuery(absoluteUrl, playlistUri);
+            if (!IsValidStreamUrl(absoluteUrl))
+                continue;
+
+            sb.Append(CultureInfo.InvariantCulture, $"#EXTINF:{segmentSeconds:F3},\n");
+            sb.AppendLine(absoluteUrl);
+        }
+
+        sb.AppendLine("#EXT-X-ENDLIST");
+        return sb.ToString();
+    }
+
+    private static string RewriteHlsPlaylistPassthrough(
+        string playlist,
+        string playlistUrl,
+        string proxyBaseUrl)
+    {
         Uri.TryCreate(playlistUrl, UriKind.Absolute, out var playlistUri);
         var sb = new StringBuilder(playlist.Length + 256);
 
@@ -1393,9 +1475,7 @@ public class JfresolveApiController : ControllerBase
                 continue;
             }
 
-            sb.AppendLine(useDirectSegmentUrls
-                ? absoluteUrl
-                : BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
+            sb.AppendLine(BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
         }
 
         return sb.ToString();
@@ -1436,10 +1516,10 @@ public class JfresolveApiController : ControllerBase
         var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
         var useDirectSegmentUrls = IsTorBoxHlsPlaylistUrl(playlistUrl);
         long? runtimeTicks = TorBoxPlaybackCache.TryGetRuntimeTicks(type, id);
+        long? seekTicks = SeekPositionCache.TryPeekPending();
         if (useDirectSegmentUrls)
         {
             MarkActiveHlsPlayback(type, id);
-            var seekTicks = SeekPositionCache.TryConsumePending();
             if (seekTicks.HasValue)
             {
                 _logger.LogInformation(
@@ -1447,13 +1527,9 @@ public class JfresolveApiController : ControllerBase
                     seekTicks.Value / 10_000_000.0, type, id);
             }
 
+            var segmentCount = ParseHlsMediaSegments(playlist).Count;
             if (runtimeTicks.HasValue)
             {
-                var segmentCount = playlist.Split('\n').Count(l =>
-                {
-                    var t = l.TrimEnd('\r').Trim();
-                    return t.Length > 0 && !t.StartsWith('#');
-                });
                 _logger.LogInformation(
                     "Jfresolve: Correcting TorBox HLS segment durations for {Type}/{Id} ({TotalSeconds:F0}s runtime, {SegmentCount} segments)",
                     type, id, runtimeTicks.Value / 10_000_000.0, segmentCount);
@@ -1465,13 +1541,23 @@ public class JfresolveApiController : ControllerBase
                     type, id);
             }
 
+            if (seekTicks.HasValue && runtimeTicks.HasValue && segmentCount > 0)
+            {
+                var segmentSeconds = runtimeTicks.Value / 10_000_000.0 / segmentCount;
+                var trimIndex = (int)Math.Floor(seekTicks.Value / 10_000_000.0 / segmentSeconds);
+                _logger.LogInformation(
+                    "Jfresolve: Trimming TorBox HLS playlist for {Type}/{Id} from segment {SegmentIndex}",
+                    type, id, trimIndex);
+            }
+
             _logger.LogInformation(
                 "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
                 type, id);
         }
 
         var proxyBase = BuildHlsProxyBaseUrl(userId);
-        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls, runtimeTicks);
+        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls, runtimeTicks, seekTicks);
+        SeekPositionCache.TryConsumePending();
         return Content(rewritten, "application/vnd.apple.mpegurl");
     }
 
@@ -1950,7 +2036,11 @@ public class JfresolveApiController : ControllerBase
             }
         }
 
-        if (streamResponse.Content.Headers.ContentType != null)
+        if (Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true)
+        {
+            Response.ContentType = "video/x-matroska";
+        }
+        else if (streamResponse.Content.Headers.ContentType != null)
         {
             Response.ContentType = streamResponse.Content.Headers.ContentType.ToString();
         }

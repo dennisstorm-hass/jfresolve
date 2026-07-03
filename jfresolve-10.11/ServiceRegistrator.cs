@@ -10,6 +10,7 @@ using Jfresolve.ScheduledTasks;
 using MediaBrowser.Controller;
 using MediaBrowser.Controller.IO;
 using MediaBrowser.Controller.Library;
+using MediaBrowser.Controller.MediaEncoding;
 using MediaBrowser.Controller.Persistence;
 using MediaBrowser.Controller.Plugins;
 using MediaBrowser.Controller.Providers;
@@ -94,6 +95,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         // Register decorators
         services.DecorateSingle<IItemRepository, JfresolveItemRepository>();
         services.DecorateSingle<IMediaSourceManager, MediaSourceManagerDecorator>();
+        services.DecorateSingle<ITranscodeManager, TranscodeManagerDecorator>();
 
 
         // Register MVC filters

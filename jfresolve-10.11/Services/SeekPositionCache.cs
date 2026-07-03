@@ -13,6 +13,8 @@ public static class SeekPositionCache
     private static DateTime _pendingAt = DateTime.MinValue;
     private static readonly TimeSpan PendingWindow = TimeSpan.FromSeconds(15);
 
+    private static DateTime _seekRestartAt = DateTime.MinValue;
+
     public static void SetPending(long startTicks)
     {
         if (startTicks <= 0)
@@ -22,6 +24,17 @@ public static class SeekPositionCache
         {
             _pendingStartTicks = startTicks;
             _pendingAt = DateTime.UtcNow;
+        }
+    }
+
+    public static long? TryPeekPending()
+    {
+        lock (Gate)
+        {
+            if (_pendingStartTicks <= 0 || DateTime.UtcNow - _pendingAt > PendingWindow)
+                return null;
+
+            return _pendingStartTicks;
         }
     }
 
@@ -41,13 +54,21 @@ public static class SeekPositionCache
         }
     }
 
-    private static DateTime _seekRestartAt = DateTime.MinValue;
-
     public static void MarkSeekRestart()
     {
         lock (Gate)
         {
             _seekRestartAt = DateTime.UtcNow;
+        }
+    }
+
+    public static void ClearSeekState()
+    {
+        lock (Gate)
+        {
+            _pendingStartTicks = 0;
+            _pendingAt = DateTime.MinValue;
+            _seekRestartAt = DateTime.MinValue;
         }
     }
 
