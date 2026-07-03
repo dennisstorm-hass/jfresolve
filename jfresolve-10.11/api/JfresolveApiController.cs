@@ -547,7 +547,8 @@ public class JfresolveApiController : ControllerBase
         CleanupRedirectUrlCacheIfNeeded();
         
         if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now
-            && !TorBoxStreamService.IsHlsUrl(cachedRedirect.RedirectUrl))
+            && !TorBoxStreamService.IsHlsUrl(cachedRedirect.RedirectUrl)
+            && !TorBoxStreamService.IsTorBoxStreamCdnUrl(cachedRedirect.RedirectUrl))
         {
             _logger.LogDebug("Jfresolve: Using cached redirect URL for {Type}/{Id} (Season: {Season}, Episode: {Episode})", 
                 type, id, season ?? "N/A", episode ?? "N/A");
@@ -576,8 +577,9 @@ public class JfresolveApiController : ControllerBase
                 redirectUrl = await NormalizeStreamUpstreamUrlAsync(
                     redirectUrl, config.TorBoxApiKey, CancellationToken.None);
 
-                // TorBox createstream HLS URLs are short-lived — always re-resolve on the next request.
-                if (!TorBoxStreamService.IsHlsUrl(redirectUrl))
+                // TorBox createstream CDN/HLS URLs are short-lived — always re-resolve on the next request.
+                if (!TorBoxStreamService.IsHlsUrl(redirectUrl)
+                    && !TorBoxStreamService.IsTorBoxStreamCdnUrl(redirectUrl))
                 {
                     var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                     _redirectUrlCache.AddOrUpdate(redirectCacheKey, (redirectUrl, expiry), (key, oldValue) => (redirectUrl, expiry));

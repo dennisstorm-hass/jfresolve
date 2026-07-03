@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.73",
+        "changelog": "Fix: Use TorBox createstream CDN /dld/ URLs (tb-cdn.io) like the TorBox web player. Prefer seekable CDN direct URLs from createstream/getstreamdata over requestdl MKV; HLS remains fallback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.73/jfresolve.zip",
+        "checksum": "e5dde206c0f60f25a9e19d8fb5cf9f73",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-03T10:18:00Z"
+      },
+      {
         "version": "1.0.0.72",
         "changelog": "Fix: Keep 4K quality for TorBox seek. No longer downgrades to 1080p MP4; keeps 4K MKV and uses TorBox createstream HLS for seek. Implements TorBox discovery flow, transcoding poll (up to 60s), and createstream retries. Prefers 4K MP4 within same tier when available; Torrentio limit raised to 25.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.72/jfresolve.zip",
