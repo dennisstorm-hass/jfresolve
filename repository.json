@@ -12,7 +12,7 @@
         "version": "1.0.0.82",
         "changelog": "Fix Wolphin/Android TV playback: restore direct MKV resolve path (no forced stream.m3u8); fix false seek detection; capture FFmpeg -ss for HLS playlist trim; serve MKV inline on legacy stream.m3u8 URLs.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.82/jfresolve.zip",
-        "checksum": "e445026d4edceae852106a35bb3376ba",
+        "checksum": "5da95c58e32205059497c2bc7126c569",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-07-03T12:30:00Z"
       },
