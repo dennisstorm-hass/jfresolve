@@ -97,12 +97,10 @@ public sealed class PlaybackStreamResolver
             request.Quality ?? "default",
             request.Index?.ToString() ?? "0");
 
-        var cacheKey = BuildRedirectUrlCacheKey(request);
+        var cacheKey = BuildDeliveryUrlCacheKey(request);
         var now = DateTime.UtcNow;
 
-        if (_deliveryUrlCache.TryGetValue(cacheKey, out var cachedDelivery)
-            && cachedDelivery.Expiry > now
-            && TorBoxStreamService.IsTorBoxDeliveryUrl(cachedDelivery.Url))
+        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cachedDelivery))
         {
             _logger.LogDebug(
                 "Jfresolve: Using cached TorBox delivery URL for {Type}/{Id}",
@@ -111,9 +109,11 @@ public sealed class PlaybackStreamResolver
             return cachedDelivery.Url;
         }
 
+        var redirectCacheKey = BuildRedirectUrlCacheKey(request);
+
         CleanupRedirectUrlCacheIfNeeded();
 
-        if (_redirectUrlCache.TryGetValue(cacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
+        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
         {
             _logger.LogDebug(
                 "Jfresolve: Using cached addon redirect URL for {Type}/{Id}",
@@ -154,7 +154,7 @@ public sealed class PlaybackStreamResolver
             {
                 var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                 _redirectUrlCache.AddOrUpdate(
-                    cacheKey,
+                    redirectCacheKey,
                     (redirectUrl, expiry),
                     (_, _) => (redirectUrl, expiry));
             }
@@ -177,11 +177,9 @@ public sealed class PlaybackStreamResolver
         StreamResolveRequest request,
         CancellationToken cancellationToken = default)
     {
-        var cacheKey = BuildRedirectUrlCacheKey(request);
+        var cacheKey = BuildDeliveryUrlCacheKey(request);
         var now = DateTime.UtcNow;
-        if (_deliveryUrlCache.TryGetValue(cacheKey, out var cached)
-            && cached.Expiry > now
-            && TorBoxStreamService.IsTorBoxDeliveryUrl(cached.Url))
+        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cached))
         {
             return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
         }
@@ -555,13 +553,36 @@ public sealed class PlaybackStreamResolver
 
     private static string BuildRedirectUrlCacheKey(StreamResolveRequest request)
     {
+        var key = BuildDeliveryUrlCacheKey(request);
+        if (request.UserId.HasValue)
+            key += $":u{request.UserId.Value:N}";
+        return key;
+    }
+
+    private static string BuildDeliveryUrlCacheKey(StreamResolveRequest request)
+    {
         var key = BuildFailoverCacheKey(request);
         if (request.Index.HasValue)
             key += $":index{request.Index.Value}";
-        if (request.UserId.HasValue)
-            key += $":u{request.UserId.Value:N}";
         key += request.PreferHdrOverDolbyVision ? ":hdr" : ":dv";
+        key += request.ForceHls || request.PreferHlsForSeek ? ":hls" : ":direct";
         return key;
+    }
+
+    private bool TryGetCachedDeliveryUrl(
+        string cacheKey,
+        DateTime now,
+        out (string Url, string Container, DateTime Expiry) cached)
+    {
+        if (_deliveryUrlCache.TryGetValue(cacheKey, out cached)
+            && cached.Expiry > now
+            && TorBoxStreamService.IsTorBoxDeliveryUrl(cached.Url))
+        {
+            return true;
+        }
+
+        cached = default;
+        return false;
     }
 
     private void CleanupStreamMetadataCacheIfNeeded()

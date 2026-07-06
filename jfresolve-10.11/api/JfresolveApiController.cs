@@ -20,7 +20,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using Microsoft.Extensions.Primitives;
+using Microsoft.AspNetCore.WebUtilities;
 
 namespace Jfresolve.Api;
 
@@ -701,10 +701,22 @@ public class JfresolveApiController : ControllerBase
 
     private string BuildHlsProxyBaseUrl(Guid? userId)
     {
-        if (!userId.HasValue)
-            return $"{Request.Scheme}://{Request.Host}{Request.Path}";
+        var baseUrl = $"{Request.Scheme}://{Request.Host}{Request.Path}";
+        var query = QueryHelpers.ParseQuery(Request.QueryString.Value);
+        var parameters = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in query)
+        {
+            if (pair.Key.Equals("hlsSeg", StringComparison.OrdinalIgnoreCase))
+                continue;
 
-        return $"{Request.Scheme}://{Request.Host}{Request.Path}?userId={userId.Value:N}";
+            if (!string.IsNullOrEmpty(pair.Value))
+                parameters[pair.Key] = pair.Value.ToString();
+        }
+
+        if (userId.HasValue)
+            parameters["userId"] = userId.Value.ToString("N");
+
+        return parameters.Count == 0 ? baseUrl : QueryHelpers.AddQueryString(baseUrl, parameters);
     }
 
     private static string BuildHlsProxyUrl(string proxyBaseUrl, string absoluteResourceUrl)
@@ -837,7 +849,7 @@ public class JfresolveApiController : ControllerBase
                 continue;
 
             sb.Append(CultureInfo.InvariantCulture, $"#EXTINF:{segmentSeconds:F3},\n");
-            sb.AppendLine(absoluteUrl);
+            sb.AppendLine(BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
         }
 
         sb.AppendLine("#EXT-X-ENDLIST");
@@ -960,7 +972,7 @@ public class JfresolveApiController : ControllerBase
             }
 
             _logger.LogInformation(
-                "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
+                "Jfresolve: Rewriting TorBox HLS playlist with proxied segment URLs for {Type}/{Id}",
                 type, id);
         }
 
