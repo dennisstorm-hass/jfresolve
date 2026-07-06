@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.96",
-        "changelog": "Fix TorBox playback hang: always use createstream HLS (not /dld/ byte-range proxy). Force HLS on all TorBox resolve requests, resolve delivery before Jellyfin inner probe, fix HLS cache poisoning.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.96/jfresolve.zip",
-        "checksum": "4966b09a4544e4d1e080d8bd6d2aca2e",
+        "version": "1.0.0.97",
+        "changelog": "Fix TorBox HLS FFmpeg exit 234: patch MediaStreams to H.264/AAC (createstream transcode, not source HEVC/DV), re-probe when DB has stale HEVC metadata, restore FFmpeg remux arg fix for tb-cdn.io HLS.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.97/jfresolve.zip",
+        "checksum": "ef263b7bd34e6668918cfc79ee2ae5cd",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T11:05:00Z"
+        "timestamp": "2026-07-06T11:12:00Z"
       },
       {
         "version": "1.0.0.93",

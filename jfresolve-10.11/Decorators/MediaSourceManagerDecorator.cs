@@ -118,7 +118,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
         var probeItem = item.IsVirtualItem ? item : primaryItem;
 
-        if (primarySource != null && probeItem != null && NeedsProbe(primarySource, probeItem))
+        if (primarySource != null && probeItem != null
+            && (NeedsProbe(primarySource, probeItem) || NeedsTorBoxHlsStreamRefresh(primarySource, probeItem, delivery)))
         {
             _probedItems.TryAdd(probeItem.Id, DateTime.UtcNow);
             _log.LogInformation("Jfresolve: Probing primary item {Name} to extract complete stream information (video, audio, subtitles)", probeItem.Name);
@@ -316,6 +317,15 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (sources.Count > 0)
         {
             sources[0].Type = MediaSourceType.Default;
+        }
+
+        if (delivery != null && TorBoxStreamService.IsHlsUrl(delivery.Value.Url))
+        {
+            foreach (var info in sources)
+            {
+                if (SourceMatchesPlayingItem(item, info))
+                    ApplyTorBoxHlsStreamMetadata(info);
+            }
         }
 
         // Append user id to resolve URLs so per-user preferences (e.g. prefer HDR over Dolby Vision) are applied
@@ -625,6 +635,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             ApplyContainerFromUrl(info, info.Path);
             info.SupportsDirectPlay = true;
             info.SupportsDirectStream = true;
+            ApplyTorBoxHlsStreamMetadata(info);
             ApplyEstimatedSize(info);
             return;
         }
@@ -663,6 +674,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.SupportsDirectStream = true;
         ApplyEstimatedSize(info);
 
+        if (deliveryKind == "HLS")
+            ApplyTorBoxHlsStreamMetadata(info);
+
         _log.LogInformation(
             "Jfresolve: Direct-play TorBox {DeliveryKind} for {Context} (host={Host}, container={Container})",
             deliveryKind,
@@ -670,6 +684,60 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             host,
             delivery.Container);
     }
+
+    /// <summary>
+    /// TorBox createstream HLS is transcoded to H.264/AAC MPEG-TS — not the source HEVC/DV file.
+    /// Jellyfin must see accurate codecs or it remuxes with hevc_mp4toannexb/dvh1 and FFmpeg fails.
+    /// </summary>
+    private static void ApplyTorBoxHlsStreamMetadata(MediaSourceInfo info)
+    {
+        var streams = info.MediaStreams?.ToList() ?? new List<MediaStream>();
+        if (!streams.Any())
+        {
+            streams.Add(new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264", Profile = "Main", IsDefault = true });
+            streams.Add(new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac", Profile = "LC", IsDefault = true });
+        }
+        else
+        {
+            foreach (var stream in streams)
+            {
+                if (stream.Type == MediaStreamType.Video)
+                {
+                    stream.Codec = "h264";
+                    stream.Profile = "Main";
+                    stream.BitDepth = 8;
+                }
+                else if (stream.Type == MediaStreamType.Audio)
+                {
+                    stream.Codec = "aac";
+                    stream.Profile = "LC";
+                }
+            }
+        }
+
+        info.MediaStreams = streams;
+    }
+
+    private bool NeedsTorBoxHlsStreamRefresh(
+        MediaSourceInfo source,
+        BaseItem item,
+        DirectPlaybackTarget? delivery)
+    {
+        if (delivery == null || !TorBoxStreamService.IsHlsUrl(delivery.Value.Url))
+            return false;
+
+        var streams = source.MediaStreams?.Any() == true
+            ? source.MediaStreams
+            : _inner.GetMediaStreams(item.Id);
+        var video = streams.FirstOrDefault(s => s.Type == MediaStreamType.Video);
+        return video == null || IsHevcLikeCodec(video.Codec);
+    }
+
+    private static bool IsHevcLikeCodec(string? codec) =>
+        !string.IsNullOrEmpty(codec)
+        && (codec.Contains("hevc", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("h265", StringComparison.OrdinalIgnoreCase)
+            || codec.Contains("dvhe", StringComparison.OrdinalIgnoreCase));
 
     private static bool SourceMatchesPlayingItem(BaseItem item, MediaSourceInfo info)
     {

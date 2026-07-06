@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace Jfresolve.Decorators;
 
 /// <summary>
-/// Captures FFmpeg -ss seek offsets before Jfresolve resolve URLs are opened.
+/// Captures FFmpeg -ss seek offsets and fixes TorBox HLS remux args when Jellyfin still transcodes.
 /// </summary>
 public sealed class TranscodeManagerDecorator : ITranscodeManager
 {
@@ -23,6 +23,18 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
     private static readonly Regex NumericSeekRegex = new(
         @"-ss\s+([\d.]+)",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex HevcBsfRegex = new(
+        @"-bsf:v\s+hevc_mp4toannexb\s*",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex Dvh1TagRegex = new(
+        @"-tag:v:0\s+dvh1\s*",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex AudioCopyCodecRegex = new(
+        @"-codec:a:0\s+copy",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly ITranscodeManager _inner;
     private readonly ILogger<TranscodeManagerDecorator> _log;
@@ -73,6 +85,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
                 seekTicks / 10_000_000.0);
         }
 
+        var fixedArgs = FixTorBoxHlsFfmpegArgs(commandLineArguments);
+        if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
+        {
+            _log.LogInformation(
+                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS (H.264/AAC input, not source HEVC/DV)");
+            commandLineArguments = fixedArgs;
+        }
+
         return await _inner.StartFfMpeg(
             state,
             outputPath,
@@ -115,4 +135,22 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
 
         return false;
     }
+
+    private static string FixTorBoxHlsFfmpegArgs(string args)
+    {
+        if (!IsTorBoxHlsFfmpegInput(args))
+            return args;
+
+        var fixedArgs = HevcBsfRegex.Replace(args, string.Empty);
+        fixedArgs = Dvh1TagRegex.Replace(fixedArgs, string.Empty);
+
+        if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
+            fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");
+
+        return fixedArgs;
+    }
+
+    private static bool IsTorBoxHlsFfmpegInput(string args) =>
+        args.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase)
+        && args.Contains(".m3u8", StringComparison.OrdinalIgnoreCase);
 }
