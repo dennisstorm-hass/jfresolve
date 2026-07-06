@@ -32,12 +32,8 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         @"-tag:v:0\s+dvh1\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    private static readonly Regex AudioCopyCodecRegex = new(
-        @"-codec:a:0\s+copy",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
-
-    private static readonly Regex LibFdkAacRegex = new(
-        @"-codec:a:0\s+libfdk_aac(?:\s+-ac\s+\d+)?(?:\s+-ab\s+\d+)?",
+    private static readonly Regex AacAdtsToAscRegex = new(
+        @"-bsf:a\s+aac_adtstoasc\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex FfmpegInputRegex = new(
@@ -214,15 +210,12 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         fixedArgs = fixedArgs.Replace("-start_at_zero ", string.Empty, StringComparison.Ordinal);
         fixedArgs = fixedArgs.Replace("-copyts ", string.Empty, StringComparison.Ordinal);
 
-        if (LibFdkAacRegex.IsMatch(fixedArgs))
+        // TorBox createstream HLS is MPEG-TS AAC (not ADTS). aac_adtstoasc breaks remux and floods errors.
+        fixedArgs = AacAdtsToAscRegex.Replace(fixedArgs, string.Empty);
+
+        if (!fixedArgs.Contains("-max_muxing_queue_size", StringComparison.OrdinalIgnoreCase))
         {
-            fixedArgs = LibFdkAacRegex.Replace(
-                fixedArgs,
-                "-bsf:a aac_adtstoasc -codec:a:0 copy");
-        }
-        else if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
-        {
-            fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");
+            fixedArgs += " -max_muxing_queue_size 2048";
         }
 
         return fixedArgs;

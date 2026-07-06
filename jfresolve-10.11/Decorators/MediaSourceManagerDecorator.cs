@@ -9,7 +9,6 @@ using Jellyfin.Data;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jfresolve.Services;
-using Jfresolve;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.IO;
@@ -359,7 +358,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         foreach (var info in sources)
         {
             if (IsTorBoxHlsPluginPath(info.Path))
-                ApplyTorBoxHlsPlaybackTrick(info);
+                ApplyTorBoxHlsStreamFlags(info);
         }
 
         _log.LogDebug("Jfresolve: Returning {Count} total playback sources", sources.Count);
@@ -738,7 +737,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     }
 
     /// <summary>
-    /// Shared TorBox HLS stream flags. Http + IsRemote for probe/FFmpeg; Gelato trick applied separately.
+    /// TorBox createstream HLS is MPEG-TS in an m3u8 — serve via plugin proxy for native HLS direct play.
+    /// Do not use Gelato File trick here; that is for progressive files and forces broken FFmpeg remux on m3u8.
     /// </summary>
     private static void ApplyTorBoxHlsStreamFlags(MediaSourceInfo info)
     {
@@ -752,20 +752,6 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.IgnoreDts = true;
         info.GenPtsInput = true;
         ApplyEstimatedSize(info);
-    }
-
-    /// <summary>
-    /// Gelato pattern: only on PlaybackInfo, fake local file so the client direct-plays the plugin URL.
-    /// </summary>
-    private void ApplyTorBoxHlsPlaybackTrick(MediaSourceInfo info)
-    {
-        if (_httpContextAccessor.HttpContext?.GetActionName() != "GetPostedPlaybackInfo")
-            return;
-
-        info.IsRemote = false;
-        info.Protocol = MediaProtocol.File;
-        _log.LogInformation(
-            "Jfresolve: Gelato playback trick for TorBox HLS — native plugin stream.m3u8");
     }
 
     private string ToAbsolutePluginUrl(string path)
@@ -1078,7 +1064,6 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             {
                 source.Path = ToAbsolutePluginUrl(source.Path);
                 ApplyTorBoxHlsStreamFlags(source);
-                ApplyTorBoxHlsPlaybackTrick(source);
             }
         }
         
