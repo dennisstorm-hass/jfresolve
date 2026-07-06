@@ -101,7 +101,7 @@ public sealed class PlaybackStreamResolver
         var cacheKey = BuildDeliveryUrlCacheKey(request);
         var now = DateTime.UtcNow;
 
-        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cachedDelivery))
+        if (TryGetCachedDeliveryUrl(cacheKey, now, request, out var cachedDelivery))
         {
             _logger.LogDebug(
                 "Jfresolve: Using cached TorBox delivery URL for {Type}/{Id}",
@@ -134,7 +134,7 @@ public sealed class PlaybackStreamResolver
 
         var cacheKey = BuildDeliveryUrlCacheKey(request);
         var now = DateTime.UtcNow;
-        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cachedDelivery))
+        if (TryGetCachedDeliveryUrl(cacheKey, now, request, out var cachedDelivery))
             return cachedDelivery.Url;
 
         var redirectCacheKey = BuildRedirectUrlCacheKey(request);
@@ -213,7 +213,7 @@ public sealed class PlaybackStreamResolver
     {
         var cacheKey = BuildDeliveryUrlCacheKey(request);
         var now = DateTime.UtcNow;
-        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cached))
+        if (TryGetCachedDeliveryUrl(cacheKey, now, request, out var cached))
         {
             return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
         }
@@ -599,18 +599,28 @@ public sealed class PlaybackStreamResolver
         if (request.Index.HasValue)
             key += $":index{request.Index.Value}";
         key += request.PreferHdrOverDolbyVision ? ":hdr" : ":dv";
+        if (request.ForceHls || request.PreferHlsForSeek)
+            key += ":hls";
         return key;
     }
 
     private bool TryGetCachedDeliveryUrl(
         string cacheKey,
         DateTime now,
+        StreamResolveRequest request,
         out (string Url, string Container, DateTime Expiry) cached)
     {
         if (_deliveryUrlCache.TryGetValue(cacheKey, out cached)
             && cached.Expiry > now
             && TorBoxStreamService.IsTorBoxDeliveryUrl(cached.Url))
         {
+            if ((request.ForceHls || request.PreferHlsForSeek)
+                && !TorBoxStreamService.IsHlsUrl(cached.Url))
+            {
+                cached = default;
+                return false;
+            }
+
             return true;
         }
 

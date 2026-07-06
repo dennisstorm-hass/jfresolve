@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.95",
-        "changelog": "TorBox direct play: feed createstream HLS CDN URL directly to Jellyfin with SupportsDirectPlay/DirectStream. Remove plugin stream.m3u8 routing, forced codec patching, and FFmpeg remux arg hacks — let Jellyfin decide playback/transcode.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.95/jfresolve.zip",
-        "checksum": "6235d6b4b8d4a0be95738934c19ca00e",
+        "version": "1.0.0.96",
+        "changelog": "Fix TorBox playback hang: always use createstream HLS (not /dld/ byte-range proxy). Force HLS on all TorBox resolve requests, resolve delivery before Jellyfin inner probe, fix HLS cache poisoning.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.96/jfresolve.zip",
+        "checksum": "4966b09a4544e4d1e080d8bd6d2aca2e",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T11:00:00Z"
+        "timestamp": "2026-07-06T11:05:00Z"
       },
       {
         "version": "1.0.0.93",

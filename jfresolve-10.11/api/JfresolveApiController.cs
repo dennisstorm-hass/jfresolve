@@ -303,6 +303,7 @@ public class JfresolveApiController : ControllerBase
 
         var isHlsPath = Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true;
         var seekHls = !string.IsNullOrWhiteSpace(config.TorBoxApiKey) && DetectTorBoxSeekHls();
+        var torBoxConfigured = !string.IsNullOrWhiteSpace(config.TorBoxApiKey);
 
         if (!seekHls)
         {
@@ -311,9 +312,19 @@ public class JfresolveApiController : ControllerBase
                 ClearActiveHlsPlayback(type, id);
         }
 
-        if (isHlsPath && !string.IsNullOrWhiteSpace(config.TorBoxApiKey))
+        if (torBoxConfigured)
         {
             forceHls = true;
+            if (!isHlsPath && !seekHls)
+            {
+                _logger.LogInformation(
+                    "Jfresolve: TorBox configured — using createstream HLS for {Type}/{Id} resolve request",
+                    type, id);
+            }
+        }
+
+        if (isHlsPath && torBoxConfigured)
+        {
             _logger.LogInformation(
                 "Jfresolve: stream.m3u8 request for {Type}/{Id} — using TorBox createstream HLS",
                 type, id);

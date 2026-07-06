@@ -72,6 +72,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
         _log.LogDebug("Jfresolve: GetPlaybackMediaSources for {ItemId} ({Name})", item.Id, item.Name);
 
+        var torBoxConfigured = !string.IsNullOrWhiteSpace(JfresolvePlugin.Instance?.Configuration?.TorBoxApiKey);
+
         BaseItem primaryItem = item;
 
         if (item.IsVirtualItem)
@@ -88,16 +90,30 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             _log.LogDebug("Jfresolve: Using primary item {PrimaryId} ({PrimaryName})", primaryItem.Id, primaryItem.Name);
         }
 
-        var sources = (await _inner.GetPlaybackMediaSources(primaryItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
-
-        foreach (var info in sources)
-            ApplyTrick(info);
-
         var delivery = await _directPlaybackResolver.GetOrResolveAsync(
             item.Id,
             item.Path,
             user?.Id,
             cancellationToken).ConfigureAwait(false);
+
+        var sources = (await _inner.GetPlaybackMediaSources(
+            primaryItem,
+            user,
+            allowMediaProbe && !torBoxConfigured,
+            enablePathSubstitution,
+            cancellationToken)).ToList();
+
+        foreach (var info in sources)
+            ApplyTrick(info);
+
+        if (delivery != null)
+        {
+            foreach (var info in sources)
+            {
+                if (SourceMatchesPlayingItem(item, info))
+                    ApplyDirectDelivery(info, delivery.Value, item);
+            }
+        }
 
         var primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
         var probeItem = item.IsVirtualItem ? item : primaryItem;
@@ -108,7 +124,12 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             _log.LogInformation("Jfresolve: Probing primary item {Name} to extract complete stream information (video, audio, subtitles)", probeItem.Name);
             await ProbeItem(probeItem, delivery?.Url, cancellationToken);
 
-            sources = (await _inner.GetPlaybackMediaSources(primaryItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
+            sources = (await _inner.GetPlaybackMediaSources(
+                primaryItem,
+                user,
+                allowMediaProbe && !torBoxConfigured,
+                enablePathSubstitution,
+                cancellationToken)).ToList();
             foreach (var info in sources)
                 ApplyTrick(info);
 
@@ -173,15 +194,6 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
         else if (primarySource != null)
         {
-            if (delivery != null)
-            {
-                foreach (var info in sources)
-                {
-                    if (SourceMatchesPlayingItem(item, info))
-                        ApplyDirectDelivery(info, delivery.Value, item);
-                }
-            }
-
             // Even if we don't need to probe, ensure MediaStreams are populated from database
             // This prevents Jellyfin from doing additional probing for subtitle information ("Additional data" delay)
             try
