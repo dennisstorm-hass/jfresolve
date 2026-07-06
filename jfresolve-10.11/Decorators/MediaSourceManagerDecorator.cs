@@ -38,8 +38,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     private readonly IItemRepository _repo;
     private readonly IDirectoryService _directoryService;
     private readonly IHttpContextAccessor _httpContextAccessor;
-    private readonly PlaybackStreamResolver _playbackStreamResolver;
-    private readonly UserPreferencesService _userPreferencesService;
+    private readonly DirectPlaybackResolver _directPlaybackResolver;
     
     // Track items that have been probed or are currently being probed
     // Key: item ID, Value: timestamp when probe was initiated
@@ -54,16 +53,14 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         IItemRepository repo,
         IDirectoryService directoryService,
         IHttpContextAccessor httpContextAccessor,
-        PlaybackStreamResolver playbackStreamResolver,
-        UserPreferencesService userPreferencesService)
+        DirectPlaybackResolver directPlaybackResolver)
     {
         _inner = inner;
         _log = log;
         _repo = repo;
         _directoryService = directoryService;
         _httpContextAccessor = httpContextAccessor;
-        _playbackStreamResolver = playbackStreamResolver;
-        _userPreferencesService = userPreferencesService;
+        _directPlaybackResolver = directPlaybackResolver;
     }
 
     public async Task<IReadOnlyList<MediaSourceInfo>> GetPlaybackMediaSources(BaseItem item, User user, bool allowMediaProbe, bool enablePathSubstitution, CancellationToken cancellationToken)
@@ -94,33 +91,33 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var sources = (await _inner.GetPlaybackMediaSources(primaryItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
 
         foreach (var info in sources)
-        {
             ApplyTrick(info);
-            if (SourceMatchesPlayingItem(item, info))
-                await ApplyDirectTorBoxUrlAsync(info, item, user, cancellationToken).ConfigureAwait(false);
-        }
 
-        var primarySource = sources.FirstOrDefault();
-        if (primarySource != null && NeedsProbe(primarySource, primaryItem))
+        var delivery = await _directPlaybackResolver.GetOrResolveAsync(
+            item.Id,
+            item.Path,
+            user?.Id,
+            cancellationToken).ConfigureAwait(false);
+
+        var primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
+        var probeItem = item.IsVirtualItem ? item : primaryItem;
+
+        if (primarySource != null && probeItem != null && NeedsProbe(primarySource, probeItem))
         {
-            _log.LogInformation("Jfresolve: Probing primary item {Name} to extract complete stream information (video, audio, subtitles)", primaryItem.Name);
-            await ProbeItem(primaryItem, cancellationToken);
+            _probedItems.TryAdd(probeItem.Id, DateTime.UtcNow);
+            _log.LogInformation("Jfresolve: Probing primary item {Name} to extract complete stream information (video, audio, subtitles)", probeItem.Name);
+            await ProbeItem(probeItem, delivery?.Url, cancellationToken);
 
-            // Get sources again after probing to ensure we have complete stream information
             sources = (await _inner.GetPlaybackMediaSources(primaryItem, user, allowMediaProbe, enablePathSubstitution, cancellationToken)).ToList();
             foreach (var info in sources)
-            {
                 ApplyTrick(info);
-                if (SourceMatchesPlayingItem(item, info))
-                    await ApplyDirectTorBoxUrlAsync(info, item, user, cancellationToken).ConfigureAwait(false);
-            }
-            
-            // CRITICAL: Ensure MediaStreams on MediaSourceInfo are populated from database
+
+            primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
             // This prevents Jellyfin from doing additional probing ("Additional data" delay)
             // Get streams from database (which were populated by the probe)
             try
             {
-                var dbStreams = _inner.GetMediaStreams(primaryItem.Id).ToList();
+                var dbStreams = _inner.GetMediaStreams(probeItem.Id).ToList();
                 if (dbStreams.Any())
                 {
                     var updatedSource = sources.FirstOrDefault();
@@ -130,20 +127,29 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                         // This ensures subtitle information is immediately available without breaking subtitle sync
                         updatedSource.MediaStreams = MergeStreamsPreservingIndices(updatedSource.MediaStreams, dbStreams);
                         _log.LogInformation("Jfresolve: Merged MediaSourceInfo with {Count} streams from database (including {SubtitleCount} subtitles) for {Name}", 
-                            dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), primaryItem.Name);
+                            dbStreams.Count, dbStreams.Count(s => s.Type == MediaStreamType.Subtitle), probeItem.Name);
                     }
                 }
             }
             catch (Exception ex)
             {
                 // Log but don't fail - database access errors shouldn't break playback
-                _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} after probing, continuing with existing streams", primaryItem.Name);
+                _log.LogWarning(ex, "Jfresolve: Error accessing database streams for {Name} after probing, continuing with existing streams", probeItem.Name);
+            }
+
+            if (delivery != null)
+            {
+                foreach (var info in sources)
+                {
+                    if (SourceMatchesPlayingItem(item, info))
+                        ApplyDirectDelivery(info, delivery.Value, item.Name);
+                }
+                primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
             }
             
             // Ensure media info is complete by using AddMediaInfoWithProbe on the primary source
             // This ensures subtitle information is available before playback starts, preventing stream restarts when subtitles are changed
-            if (primarySource != null && !string.IsNullOrEmpty(primarySource.Path) && 
-                primarySource.Path.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase))
+            if (primarySource != null && !string.IsNullOrEmpty(primarySource.Path))
             {
                 try
                 {
@@ -154,9 +160,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                         await _inner.AddMediaInfoWithProbe(updatedSource, isAudio: false, cacheKey: null, addProbeDelay: false, isLiveStream: false, cancellationToken);
                         
                         // Verify subtitle streams are now available
-                        var finalStreams = _inner.GetMediaStreams(primaryItem.Id);
+                        var finalStreams = _inner.GetMediaStreams(probeItem.Id);
                         var subtitleCount = finalStreams.Count(s => s.Type == MediaStreamType.Subtitle);
-                        _log.LogInformation("Jfresolve: Added complete media info for {Name} - {SubtitleCount} subtitle stream(s) available", primaryItem.Name, subtitleCount);
+                        _log.LogInformation("Jfresolve: Added complete media info for {Name} - {SubtitleCount} subtitle stream(s) available", probeItem.Name, subtitleCount);
                     }
                 }
                 catch (Exception ex)
@@ -167,6 +173,15 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
         else if (primarySource != null)
         {
+            if (delivery != null)
+            {
+                foreach (var info in sources)
+                {
+                    if (SourceMatchesPlayingItem(item, info))
+                        ApplyDirectDelivery(info, delivery.Value, item.Name);
+                }
+            }
+
             // Even if we don't need to probe, ensure MediaStreams are populated from database
             // This prevents Jellyfin from doing additional probing for subtitle information ("Additional data" delay)
             try
@@ -224,8 +239,29 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
             if (virtualSource != null && NeedsProbe(virtualSource, virtualItem))
             {
+                DirectPlaybackTarget? virtualDelivery = null;
+                if (SourceMatchesPlayingItem(item, virtualSource))
+                {
+                    virtualDelivery = await _directPlaybackResolver.GetOrResolveAsync(
+                        virtualItem.Id,
+                        virtualItem.Path,
+                        user?.Id,
+                        cancellationToken).ConfigureAwait(false);
+                }
+
+                _probedItems.TryAdd(virtualItem.Id, DateTime.UtcNow);
                 _log.LogInformation("Jfresolve: Probing virtual item {Name} to extract complete stream information (video, audio, subtitles)", virtualItem.Name);
-                await ProbeItem(virtualItem, cancellationToken);
+                await ProbeItem(virtualItem, virtualDelivery?.Url, cancellationToken);
+            }
+
+            DirectPlaybackTarget? qualityDelivery = null;
+            if (SourceMatchesPlayingItem(item, new MediaSourceInfo { Id = virtualItem.Id.ToString("N") }))
+            {
+                qualityDelivery = await _directPlaybackResolver.GetOrResolveAsync(
+                    virtualItem.Id,
+                    virtualItem.Path,
+                    user?.Id,
+                    cancellationToken).ConfigureAwait(false);
             }
 
             var qualityStreams = _inner.GetMediaStreams(virtualItem.Id);
@@ -259,8 +295,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
             // Apply trick to ensure proper protocol and remote settings
             ApplyTrick(qualitySource);
-            if (SourceMatchesPlayingItem(item, qualitySource))
-                await ApplyDirectTorBoxUrlAsync(qualitySource, virtualItem, user, cancellationToken).ConfigureAwait(false);
+            if (qualityDelivery != null && SourceMatchesPlayingItem(item, qualitySource))
+                ApplyDirectDelivery(qualitySource, qualityDelivery.Value, virtualItem.Name);
 
             sources.Add(qualitySource);
         }
@@ -305,6 +341,12 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     {
         if (source == null) return false;
 
+        if (_probedItems.TryGetValue(item.Id, out var probeTime)
+            && (DateTime.UtcNow - probeTime).TotalMinutes < 5)
+        {
+            return false;
+        }
+
         var streams = source.MediaStreams ?? new List<MediaStream>();
         var hasVideoStreams = streams.Any(ms => ms.Type == MediaStreamType.Video);
         var noVideoStreams = !hasVideoStreams;
@@ -332,16 +374,27 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     }
 
     /// <summary>
-    /// Probe an item to populate its MediaStreams
+    /// Probe an item to populate its MediaStreams.
+    /// When <paramref name="directProbeUrl"/> is set, ffprobe reads the TorBox CDN URL directly
+    /// instead of the resolve proxy (which returns invalid data for probing).
     /// </summary>
-    private async Task ProbeItem(BaseItem item, CancellationToken cancellationToken)
+    private async Task ProbeItem(BaseItem item, string? directProbeUrl, CancellationToken cancellationToken)
     {
         var wasVirtual = item.IsVirtualItem;
+        var originalPath = item.Path;
         item.IsVirtualItem = false;
+
+        if (!string.IsNullOrWhiteSpace(directProbeUrl))
+            item.Path = directProbeUrl;
 
         try
         {
-            _log.LogInformation("Jfresolve: Probing {Name} - Path: {Path}, IsVirtual: {IsVirtual}", item.Name, item.Path, item.IsVirtualItem);
+            _log.LogInformation(
+                "Jfresolve: Probing {Name} - Path: {Path}, IsVirtual: {IsVirtual}, DirectProbe: {DirectProbe}",
+                item.Name,
+                item.Path,
+                item.IsVirtualItem,
+                !string.IsNullOrWhiteSpace(directProbeUrl));
 
             await item.RefreshMetadata(
                 new MetadataRefreshOptions(_directoryService)
@@ -372,6 +425,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         }
         finally
         {
+            item.Path = originalPath;
             item.IsVirtualItem = wasVirtual;
             await item.UpdateToRepositoryAsync(ItemUpdateType.MetadataEdit, cancellationToken).ConfigureAwait(false);
         }
@@ -579,67 +633,23 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         ApplyEstimatedSize(info);
     }
 
-    private async Task ApplyDirectTorBoxUrlAsync(
-        MediaSourceInfo info,
-        BaseItem item,
-        User user,
-        CancellationToken cancellationToken)
+    private void ApplyDirectDelivery(MediaSourceInfo info, DirectPlaybackTarget delivery, string logContext)
     {
-        var config = JfresolvePlugin.Instance?.Configuration;
-        if (config == null || string.IsNullOrWhiteSpace(config.TorBoxApiKey))
+        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path))
             return;
 
-        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
-            return;
-
-        if (!ResolvePathParser.TryParse(item.Path, out var parsed))
-            return;
-
-        var preferHdr = config.PreferHdrOverDolbyVision;
-        if (user != null)
-        {
-            var userPrefs = _userPreferencesService.Get(user.Id);
-            preferHdr = userPrefs.PreferHdrOverDolbyVision ?? preferHdr;
-        }
-
-        var directUrl = await _playbackStreamResolver.ResolveStreamUrlAsync(
-            new StreamResolveRequest(
-                parsed.Type,
-                parsed.Id,
-                parsed.Season,
-                parsed.Episode,
-                parsed.Quality,
-                parsed.Index,
-                user?.Id,
-                preferHdr,
-                ForceHls: false,
-                PreferHlsForSeek: false),
-            cancellationToken).ConfigureAwait(false);
-
-        if (string.IsNullOrWhiteSpace(directUrl))
-            return;
-
-        if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(directUrl))
-        {
-            _log.LogDebug(
-                "Jfresolve: Resolved URL is not TorBox /dld/ for {Type}/{Id}, keeping resolve path",
-                parsed.Type,
-                parsed.Id);
-            return;
-        }
-
-        var host = Uri.TryCreate(directUrl, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
+        var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
         _log.LogInformation(
-            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Type}/{Id} (host={Host}, quality={Quality})",
-            parsed.Type,
-            parsed.Id,
+            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Context} (host={Host}, container={Container})",
+            logContext,
             host,
-            parsed.Quality ?? "default");
+            delivery.Container);
 
-        info.Path = directUrl;
+        info.Path = delivery.Url;
         info.Protocol = MediaProtocol.Http;
         info.IsRemote = true;
-        ApplyContainerFromUrl(info, directUrl);
+        info.Container = delivery.Container;
+        ApplyEstimatedSize(info);
     }
 
     private static bool SourceMatchesPlayingItem(BaseItem item, MediaSourceInfo info)
@@ -662,20 +672,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             return;
         }
 
-        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri))
-            return;
-
-        var filename = uri.Query.Contains("filename=", StringComparison.OrdinalIgnoreCase)
-            ? Uri.UnescapeDataString(
-                uri.Query.Split("filename=", StringSplitOptions.None)[1].Split('&')[0])
-            : uri.AbsolutePath;
-
-        if (filename.Contains(".mp4", StringComparison.OrdinalIgnoreCase))
-            info.Container = "mp4";
-        else if (filename.Contains(".mkv", StringComparison.OrdinalIgnoreCase))
-            info.Container = "mkv";
-        else
-            info.Container = null;
+        info.Container = StreamContainerGuesser.FromUrl(url) ?? "mp4";
     }
 
     /// <summary>
@@ -815,10 +812,20 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             }
             
             ApplyTrick(source);
-            if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(source.Path)
+            if (TorBoxDirectPlaybackCache.TryGet(item.Id, out var cachedDelivery))
+            {
+                ApplyDirectDelivery(source, cachedDelivery, item.Name);
+            }
+            else if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(source.Path)
                 && ResolvePathParser.TryParse(item.Path, out _))
             {
-                await ApplyDirectTorBoxUrlAsync(source, item, null, cancellationToken).ConfigureAwait(false);
+                var delivery = await _directPlaybackResolver.GetOrResolveAsync(
+                    item.Id,
+                    item.Path,
+                    null,
+                    cancellationToken).ConfigureAwait(false);
+                if (delivery != null)
+                    ApplyDirectDelivery(source, delivery.Value, item.Name);
             }
 
             if (IsResolvePath(source.Path))

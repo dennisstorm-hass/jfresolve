@@ -45,7 +45,7 @@ public sealed class PlaybackStreamResolver
     private readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
     private readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
     private readonly ConcurrentDictionary<string, (string RedirectUrl, DateTime Expiry)> _redirectUrlCache = new();
-    private readonly ConcurrentDictionary<string, (string Url, DateTime Expiry)> _deliveryUrlCache = new();
+    private readonly ConcurrentDictionary<string, (string Url, string Container, DateTime Expiry)> _deliveryUrlCache = new();
     private static readonly TimeSpan DeliveryUrlCacheLifetime = TimeSpan.FromMinutes(45);
     private DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
     private DateTime _lastRedirectUrlCacheCleanup = DateTime.UtcNow;
@@ -165,7 +165,7 @@ public sealed class PlaybackStreamResolver
                 config.TorBoxApiKey,
                 request,
                 cancellationToken);
-            CacheDeliveryUrl(cacheKey, deliveryUrl);
+            CacheDeliveryUrl(cacheKey, deliveryUrl, redirectUrl);
             return deliveryUrl;
         }
         finally
@@ -174,12 +174,39 @@ public sealed class PlaybackStreamResolver
         }
     }
 
-    private void CacheDeliveryUrl(string cacheKey, string? deliveryUrl)
+    public async Task<DirectPlaybackTarget?> ResolveDirectTargetAsync(
+        StreamResolveRequest request,
+        CancellationToken cancellationToken = default)
+    {
+        var cacheKey = BuildRedirectUrlCacheKey(request);
+        var now = DateTime.UtcNow;
+        if (!request.ForceHls && !request.PreferHlsForSeek
+            && _deliveryUrlCache.TryGetValue(cacheKey, out var cached)
+            && cached.Expiry > now)
+        {
+            return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
+        }
+
+        var url = await ResolveStreamUrlAsync(request, cancellationToken);
+        if (string.IsNullOrWhiteSpace(url))
+            return null;
+
+        if (_deliveryUrlCache.TryGetValue(cacheKey, out cached) && cached.Expiry > now)
+            return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
+
+        var container = StreamContainerGuesser.FromUrl(url) ?? "mp4";
+        return new DirectPlaybackTarget(url, container, now.Add(DeliveryUrlCacheLifetime));
+    }
+
+    private void CacheDeliveryUrl(string cacheKey, string? deliveryUrl, string? redirectUrl = null)
     {
         if (string.IsNullOrWhiteSpace(deliveryUrl) || !TorBoxStreamService.IsTorBoxStreamCdnUrl(deliveryUrl))
             return;
 
-        _deliveryUrlCache[cacheKey] = (deliveryUrl, DateTime.UtcNow.Add(DeliveryUrlCacheLifetime));
+        var container = StreamContainerGuesser.FromUrl(redirectUrl)
+            ?? StreamContainerGuesser.FromUrl(deliveryUrl)
+            ?? "mp4";
+        _deliveryUrlCache[cacheKey] = (deliveryUrl, container, DateTime.UtcNow.Add(DeliveryUrlCacheLifetime));
     }
 
     public async Task<string?> NormalizeTorBoxUrlAsync(

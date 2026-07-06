@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.85",
+        "changelog": "Fix TorBox probe storm: ffprobe uses direct /dld/ CDN URL (not resolve proxy); probe before applying MediaSource path; per-item delivery cache; default mp4 container on bare /dld/ URLs.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.85/jfresolve.zip",
+        "checksum": "4c4fd2e48c61fb9395f8a00355a1912c",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T09:15:00Z"
+      },
+      {
         "version": "1.0.0.84",
         "changelog": "Fix direct TorBox URL flipping: apply /dld/ only to the played item (not all quality variants); skip re-resolution when already on tb-cdn.io; cache /dld/ URLs for 45 minutes.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.84/jfresolve.zip",

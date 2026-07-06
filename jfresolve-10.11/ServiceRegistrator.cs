@@ -38,6 +38,7 @@ public class ServiceRegistrator : IPluginServiceRegistrator
         services.AddSingleton<Services.UserPreferencesService>();
         services.AddSingleton<Services.TorBoxStreamService>();
         services.AddSingleton<Services.PlaybackStreamResolver>();
+        services.AddSingleton<Services.DirectPlaybackResolver>();
         services.AddSingleton<SearchActionFilter>();
         services.AddSingleton<InsertActionFilter>();
         services.AddSingleton<ImageResourceFilter>();
