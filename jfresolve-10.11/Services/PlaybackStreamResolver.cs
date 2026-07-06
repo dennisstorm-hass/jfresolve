@@ -565,7 +565,6 @@ public sealed class PlaybackStreamResolver
         if (request.Index.HasValue)
             key += $":index{request.Index.Value}";
         key += request.PreferHdrOverDolbyVision ? ":hdr" : ":dv";
-        key += request.ForceHls || request.PreferHlsForSeek ? ":hls" : ":direct";
         return key;
     }
 

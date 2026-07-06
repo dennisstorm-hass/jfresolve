@@ -54,7 +54,7 @@ public sealed class DirectPlaybackResolver
                 parsed.Index,
                 userId,
                 preferHdr,
-                ForceHls: false,
+                ForceHls: true,
                 PreferHlsForSeek: false),
             cancellationToken).ConfigureAwait(false);
 

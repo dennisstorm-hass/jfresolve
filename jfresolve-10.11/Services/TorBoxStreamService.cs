@@ -118,24 +118,6 @@ public class TorBoxStreamService
     {
         if (torrentRef.HasValue)
         {
-            var wantHls = forceHls || preferHlsForSeek;
-
-            if (!wantHls)
-            {
-                var directCdn = await TryGetDirectDownloadCdnUrlAsync(
-                    torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
-                if (!string.IsNullOrWhiteSpace(directCdn))
-                {
-                    _logger.LogInformation(
-                        "Jfresolve: Using TorBox /dld/ CDN for torrent {TorrentId} file {FileId}{HashSuffix} (host={Host})",
-                        torrentRef.Value.TorrentId,
-                        torrentRef.Value.FileId,
-                        string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
-                        Uri.TryCreate(directCdn, UriKind.Absolute, out var cdnUri) ? cdnUri.Host : "unknown");
-                    return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directCdn);
-                }
-            }
-
             var hlsPlayback = await TryCreateStreamPlaybackAsync(
                 torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
             if (hlsPlayback.HasValue && hlsPlayback.Value.Kind == TorBoxDeliveryKind.Hls)
@@ -147,6 +129,22 @@ public class TorBoxStreamService
                     string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
                     Uri.TryCreate(hlsPlayback.Value.Url, UriKind.Absolute, out var hlsUri) ? hlsUri.Host : "unknown");
                 return hlsPlayback.Value;
+            }
+
+            if (!forceHls && !preferHlsForSeek)
+            {
+                var directCdn = await TryGetDirectDownloadCdnUrlAsync(
+                    torBoxApiKey, torrentRef.Value.TorrentId, torrentRef.Value.FileId, cancellationToken);
+                if (!string.IsNullOrWhiteSpace(directCdn))
+                {
+                    _logger.LogInformation(
+                        "Jfresolve: createstream unavailable, using TorBox /dld/ CDN fallback for torrent {TorrentId} file {FileId}{HashSuffix} (host={Host})",
+                        torrentRef.Value.TorrentId,
+                        torrentRef.Value.FileId,
+                        string.IsNullOrWhiteSpace(infoHash) ? string.Empty : $" hash {infoHash}",
+                        Uri.TryCreate(directCdn, UriKind.Absolute, out var cdnUri) ? cdnUri.Host : "unknown");
+                    return new TorBoxStreamTarget(TorBoxDeliveryKind.Direct, directCdn);
+                }
             }
 
             var permalink = BuildRequestDlPermalink(

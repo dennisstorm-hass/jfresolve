@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.91",
+        "changelog": "Restore TorBox createstream HLS as primary delivery (streamed via plugin stream.m3u8 proxy). /dld/ MP4 is fallback only when createstream is unavailable. Unified delivery cache for fast playlist response.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.91/jfresolve.zip",
+        "checksum": "ed90ce5108559de476095297aea25c5c",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T10:15:00Z"
+      },
+      {
         "version": "1.0.0.90",
         "changelog": "Fix TorBox playback: use /dld/ MP4 for normal Jellyfin delivery (createstream HLS only on seek via stream.m3u8). Proxy HLS segments through the plugin with season/episode preserved. Separate delivery cache keys for direct vs HLS.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.90/jfresolve.zip",
