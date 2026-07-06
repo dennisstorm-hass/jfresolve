@@ -158,6 +158,15 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
             "-avoid_negative_ts make_zero",
             StringComparison.Ordinal);
         fixedArgs = fixedArgs.Replace("-start_at_zero ", string.Empty, StringComparison.Ordinal);
+        fixedArgs = fixedArgs.Replace("-copyts ", string.Empty, StringComparison.Ordinal);
+
+        if (!fixedArgs.Contains("-reset_timestamps", StringComparison.Ordinal))
+        {
+            fixedArgs = fixedArgs.Replace(
+                "-map_chapters -1 ",
+                "-map_chapters -1 -reset_timestamps 1 ",
+                StringComparison.Ordinal);
+        }
 
         if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
             fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");
@@ -166,6 +175,7 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
     }
 
     private static bool IsTorBoxHlsFfmpegInput(string args) =>
-        args.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase)
-        && args.Contains(".m3u8", StringComparison.OrdinalIgnoreCase);
+        args.Contains(".m3u8", StringComparison.OrdinalIgnoreCase)
+        && (args.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase)
+            || args.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase));
 }

@@ -324,7 +324,11 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             foreach (var info in sources)
             {
                 if (SourceMatchesPlayingItem(item, info))
+                {
                     ApplyTorBoxHlsStreamMetadata(info);
+                    if (!IsTorBoxHlsPluginPath(info.Path) && IsResolvePath(item.Path))
+                        info.Path = ToTorBoxHlsPluginPath(item.Path);
+                }
             }
         }
 
@@ -349,6 +353,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                     ApplySeekHlsPath(info);
             }
         }
+
+        foreach (var info in sources)
+            ApplyPlaybackProxyTrick(info);
 
         _log.LogDebug("Jfresolve: Returning {Count} total playback sources", sources.Count);
         return sources;
@@ -628,7 +635,35 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (string.IsNullOrEmpty(info.Path))
             return;
 
-        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
+        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path))
+        {
+            info.Protocol = MediaProtocol.Http;
+            info.IsRemote = true;
+            ApplyContainerFromUrl(info, info.Path);
+            info.SupportsDirectPlay = true;
+            info.SupportsDirectStream = true;
+            ApplyTorBoxHlsStreamMetadata(info);
+            info.IgnoreDts = true;
+            info.GenPtsInput = true;
+            ApplyEstimatedSize(info);
+            return;
+        }
+
+        if (IsTorBoxHlsPluginPath(info.Path))
+        {
+            info.Protocol = MediaProtocol.Http;
+            info.Container = "m3u8";
+            info.SupportsDirectPlay = true;
+            info.SupportsDirectStream = false;
+            info.SupportsTranscoding = false;
+            ApplyTorBoxHlsStreamMetadata(info);
+            info.IgnoreDts = true;
+            info.GenPtsInput = true;
+            ApplyEstimatedSize(info);
+            return;
+        }
+
+        if (TorBoxStreamService.IsHlsUrl(info.Path))
         {
             info.Protocol = MediaProtocol.Http;
             info.IsRemote = true;
@@ -662,11 +697,37 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     private void ApplyDirectDelivery(MediaSourceInfo info, DirectPlaybackTarget delivery, BaseItem item)
     {
-        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
+        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path))
             return;
 
-        var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
+        if (IsTorBoxHlsPluginPath(info.Path))
+            return;
+
         var deliveryKind = delivery.Container == "m3u8" || TorBoxStreamService.IsHlsUrl(delivery.Url) ? "HLS" : "CDN";
+
+        if (deliveryKind == "HLS")
+        {
+            var resolvePath = IsResolvePath(info.Path) ? info.Path : item.Path;
+            info.Path = ToTorBoxHlsPluginPath(resolvePath);
+            info.Protocol = MediaProtocol.Http;
+            info.IsRemote = true;
+            info.Container = "m3u8";
+            info.SupportsDirectPlay = true;
+            info.SupportsDirectStream = false;
+            info.SupportsTranscoding = false;
+            ApplyTorBoxHlsStreamMetadata(info);
+            info.IgnoreDts = true;
+            info.GenPtsInput = true;
+            ApplyEstimatedSize(info);
+
+            _log.LogInformation(
+                "Jfresolve: TorBox HLS via plugin stream.m3u8 for {Context}: {Path}",
+                item.Name,
+                info.Path);
+            return;
+        }
+
+        var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
 
         info.Path = delivery.Url;
         info.Protocol = MediaProtocol.Http;
@@ -676,19 +737,54 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.SupportsDirectStream = true;
         ApplyEstimatedSize(info);
 
-        if (deliveryKind == "HLS")
-        {
-            ApplyTorBoxHlsStreamMetadata(info);
-            info.IgnoreDts = true;
-            info.GenPtsInput = true;
-        }
-
         _log.LogInformation(
             "Jfresolve: Direct-play TorBox {DeliveryKind} for {Context} (host={Host}, container={Container})",
             deliveryKind,
             item.Name,
             host,
             delivery.Container);
+    }
+
+    /// <summary>
+    /// Gelato pattern: on PlaybackInfo, mark TorBox HLS as non-remote so the client plays
+    /// plugin stream.m3u8 natively instead of server-side fMP4 remux (broken on TorBox TS segments).
+    /// </summary>
+    private void ApplyPlaybackProxyTrick(MediaSourceInfo info)
+    {
+        if (!IsTorBoxHlsPluginPath(info.Path))
+            return;
+
+        var action = _httpContextAccessor.HttpContext?.GetActionName();
+        if (!string.Equals(action, "GetPostedPlaybackInfo", StringComparison.Ordinal)
+            && !string.Equals(action, "GetPlaybackInfo", StringComparison.Ordinal))
+        {
+            return;
+        }
+
+        info.IsRemote = false;
+        info.SupportsDirectStream = false;
+        info.SupportsTranscoding = false;
+        _log.LogInformation(
+            "Jfresolve: PlaybackInfo proxy trick — native HLS via {Path}",
+            info.Path);
+    }
+
+    private static bool IsTorBoxHlsPluginPath(string? path) =>
+        IsResolvePath(path)
+        && path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase);
+
+    private static string ToTorBoxHlsPluginPath(string resolvePath)
+    {
+        if (string.IsNullOrWhiteSpace(resolvePath))
+            return resolvePath;
+
+        if (resolvePath.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
+            return resolvePath;
+
+        var queryIndex = resolvePath.IndexOf('?');
+        var pathOnly = queryIndex >= 0 ? resolvePath[..queryIndex] : resolvePath;
+        var query = queryIndex >= 0 ? resolvePath[queryIndex..] : string.Empty;
+        return $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
     }
 
     /// <summary>
@@ -958,6 +1054,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
             if (IsResolvePath(source.Path))
                 ApplySeekHlsPath(source);
+
+            ApplyPlaybackProxyTrick(source);
         }
         
         return source;

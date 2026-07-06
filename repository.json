@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.99",
-        "changelog": "TorBox HLS remux DTS fixes: igndts+discardcorrupt, avoid_negative_ts make_zero, strip phantom subtitle/attachment streams from HLS MediaSource, IgnoreDts/GenPtsInput flags.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.99/jfresolve.zip",
-        "checksum": "3400ec336dc2d3701130181fe886d448",
+        "version": "1.0.0.100",
+        "changelog": "Bypass broken TorBox HLS fMP4 remux: deliver via plugin stream.m3u8, Gelato PlaybackInfo IsRemote=false trick, SupportsDirectStream=false. FFmpeg fallback: strip -copyts, reset_timestamps.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.100/jfresolve.zip",
+        "checksum": "730b3c40648a55ff60a4bd6f685043f4",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T11:20:00Z"
+        "timestamp": "2026-07-06T11:25:00Z"
       },
       {
         "version": "1.0.0.93",
