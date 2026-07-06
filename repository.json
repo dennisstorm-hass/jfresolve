@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.105",
-        "changelog": "Cap TorBox HLS FFmpeg probe to 5s (was 200s). Gelato IsRemote=false on PlaybackInfo (Http, not File). Proxy HLS segments through plugin for FFmpeg/Lavf; direct CDN for browsers.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.105/jfresolve.zip",
-        "checksum": "92bebfbd1904669a923358d0c2b450e9",
+        "version": "1.0.0.106",
+        "changelog": "Fix TorBox HLS FFmpeg hang: ReadAtNativeFramerate caused -re -async 1 on remote HLS (infinite stall). Strip -re/-async in TranscodeManagerDecorator; set ReadAtNativeFramerate=false.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.106/jfresolve.zip",
+        "checksum": "6d6dbbc907cdf1c2757f67287d34e467",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T12:05:00Z"
+        "timestamp": "2026-07-06T12:20:00Z"
       },
       {
         "version": "1.0.0.93",

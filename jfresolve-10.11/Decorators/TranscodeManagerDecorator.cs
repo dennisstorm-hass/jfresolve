@@ -37,6 +37,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         @"-bsf:a\s+aac_adtstoasc\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
+    private static readonly Regex AsyncFlagRegex = new(
+        @"-async\s+1\s*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static readonly Regex ReadNativeFramerateRegex = new(
+        @"-re\s*",
+        RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
     private static readonly Regex FfmpegOutputRegex = new(
         @"\s-y\s+""[^""]+""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
@@ -172,6 +180,10 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
             StringComparison.Ordinal);
         fixedArgs = fixedArgs.Replace("-start_at_zero ", string.Empty, StringComparison.Ordinal);
         fixedArgs = fixedArgs.Replace("-copyts ", string.Empty, StringComparison.Ordinal);
+
+        // ReadAtNativeFramerate adds -re -async 1; on remote HLS this stalls FFmpeg at probe (verified locally).
+        fixedArgs = ReadNativeFramerateRegex.Replace(fixedArgs, string.Empty);
+        fixedArgs = AsyncFlagRegex.Replace(fixedArgs, string.Empty);
 
         // TorBox createstream HLS is MPEG-TS AAC (not ADTS). aac_adtstoasc breaks remux and floods errors.
         fixedArgs = AacAdtsToAscRegex.Replace(fixedArgs, string.Empty);

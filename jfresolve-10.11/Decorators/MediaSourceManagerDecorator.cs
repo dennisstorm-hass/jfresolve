@@ -753,7 +753,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.SupportsDirectStream = false;
         info.SupportsTranscoding = false;
         info.SupportsProbing = false;
-        info.ReadAtNativeFramerate = true;
+        info.ReadAtNativeFramerate = false;
         // Default Jellyfin probe is 200s of HLS (analyzeduration 200M) — cap to 5s for TorBox HLS startup.
         info.AnalyzeDurationMs = 5000;
         ApplyTorBoxHlsStreamMetadata(info);
