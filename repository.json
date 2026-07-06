@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.97",
-        "changelog": "Fix TorBox HLS FFmpeg exit 234: patch MediaStreams to H.264/AAC (createstream transcode, not source HEVC/DV), re-probe when DB has stale HEVC metadata, restore FFmpeg remux arg fix for tb-cdn.io HLS.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.97/jfresolve.zip",
-        "checksum": "ef263b7bd34e6668918cfc79ee2ae5cd",
+        "version": "1.0.0.98",
+        "changelog": "Clear Dolby Vision fields from TorBox HLS MediaStreams (h264/aac createstream, not source HEVC/DV). Prevents Jellyfin remux with hevc_mp4toannexb/dvh1. FFmpeg arg fix retained as fallback.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.98/jfresolve.zip",
+        "checksum": "421e53816e4733ad529020b98702f58e",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T11:12:00Z"
+        "timestamp": "2026-07-06T11:15:00Z"
       },
       {
         "version": "1.0.0.93",

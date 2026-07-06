@@ -694,8 +694,26 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var streams = info.MediaStreams?.ToList() ?? new List<MediaStream>();
         if (!streams.Any())
         {
-            streams.Add(new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264", Profile = "Main", IsDefault = true });
-            streams.Add(new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac", Profile = "LC", IsDefault = true });
+            streams.Add(new MediaStream
+            {
+                Type = MediaStreamType.Video,
+                Index = 0,
+                Codec = "h264",
+                CodecTag = "avc1",
+                Profile = "Main",
+                IsAVC = true,
+                IsDefault = true,
+            });
+            streams.Add(new MediaStream
+            {
+                Type = MediaStreamType.Audio,
+                Index = 1,
+                Codec = "aac",
+                Profile = "LC",
+                Channels = 2,
+                ChannelLayout = "stereo",
+                IsDefault = true,
+            });
         }
         else
         {
@@ -704,18 +722,35 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 if (stream.Type == MediaStreamType.Video)
                 {
                     stream.Codec = "h264";
+                    stream.CodecTag = "avc1";
                     stream.Profile = "Main";
                     stream.BitDepth = 8;
+                    stream.IsAVC = true;
+                    stream.DvVersionMajor = null;
+                    stream.DvVersionMinor = null;
+                    stream.DvProfile = null;
+                    stream.DvLevel = null;
+                    stream.RpuPresentFlag = null;
+                    stream.ElPresentFlag = null;
+                    stream.BlPresentFlag = null;
+                    stream.DvBlSignalCompatibilityId = null;
+                    stream.Hdr10PlusPresentFlag = null;
                 }
                 else if (stream.Type == MediaStreamType.Audio)
                 {
                     stream.Codec = "aac";
                     stream.Profile = "LC";
+                    if (stream.Channels is null or > 2)
+                    {
+                        stream.Channels = 2;
+                        stream.ChannelLayout = "stereo";
+                    }
                 }
             }
         }
 
         info.MediaStreams = streams;
+        info.Size = null;
     }
 
     private bool NeedsTorBoxHlsStreamRefresh(
