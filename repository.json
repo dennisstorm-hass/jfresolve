@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.86",
+        "changelog": "Fix TorBox /dld/ serving wrong torrent file: map Torrentio file index to TorBox file_id by array position instead of falling back to the first file (TXT/NFO).",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.86/jfresolve.zip",
+        "checksum": "885efda18b9ac67fbf8a4915a508b1c6",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T09:20:00Z"
+      },
+      {
         "version": "1.0.0.85",
         "changelog": "Fix TorBox probe storm: ffprobe uses direct /dld/ CDN URL (not resolve proxy); probe before applying MediaSource path; per-item delivery cache; default mp4 container on bare /dld/ URLs.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.85/jfresolve.zip",

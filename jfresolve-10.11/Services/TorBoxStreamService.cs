@@ -324,6 +324,9 @@ public class TorBoxStreamService
                     continue;
 
                 var fileId = ResolveFileId(torrent, fileIndex);
+                _logger.LogDebug(
+                    "Jfresolve: Mapped Torrentio file index {FileIndex} to TorBox file_id {FileId} for hash {Hash}",
+                    fileIndex, fileId, infoHash);
                 return new TorrentRef(torrentId, fileId);
             }
         }
@@ -736,27 +739,39 @@ public class TorBoxStreamService
         return false;
     }
 
+    /// <summary>
+    /// Maps Torrentio's file index (0-based position in the torrent) to TorBox's file_id for requestdl/createstream.
+    /// </summary>
     private static string ResolveFileId(JsonElement torrent, int fileIndex)
     {
         if (!torrent.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
             return fileIndex.ToString();
 
-        foreach (var file in files.EnumerateArray())
+        var fileList = files.EnumerateArray().ToList();
+
+        // Torrentio/Stremio put the array index in resolve URLs (e.g. .../hash/name/3/video.mp4).
+        if (fileIndex >= 0 && fileIndex < fileList.Count)
         {
+            var file = fileList[fileIndex];
             if (file.TryGetProperty("id", out var idProp))
             {
-                var id = idProp.ValueKind == JsonValueKind.Number ? idProp.GetInt32() : int.Parse(idProp.GetString() ?? "-1");
-                if (id == fileIndex)
-                    return id.ToString();
+                return idProp.ValueKind == JsonValueKind.Number
+                    ? idProp.GetInt32().ToString()
+                    : idProp.GetString() ?? fileIndex.ToString();
             }
         }
 
-        var firstFile = files.EnumerateArray().FirstOrDefault();
-        if (firstFile.ValueKind != JsonValueKind.Undefined && firstFile.TryGetProperty("id", out var firstId))
+        // Some torrents use TorBox file ids that match the index directly.
+        foreach (var file in fileList)
         {
-            return firstId.ValueKind == JsonValueKind.Number
-                ? firstId.GetInt32().ToString()
-                : firstId.GetString() ?? fileIndex.ToString();
+            if (!file.TryGetProperty("id", out var idProp))
+                continue;
+
+            var id = idProp.ValueKind == JsonValueKind.Number
+                ? idProp.GetInt32()
+                : int.TryParse(idProp.GetString(), out var parsed) ? parsed : -1;
+            if (id == fileIndex)
+                return id.ToString();
         }
 
         return fileIndex.ToString();
