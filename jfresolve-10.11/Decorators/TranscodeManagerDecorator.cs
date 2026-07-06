@@ -89,7 +89,7 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
         {
             _log.LogInformation(
-                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS (H.264/AAC input, not source HEVC/DV)");
+                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS (codec + DTS segment fixes)");
             commandLineArguments = fixedArgs;
         }
 
@@ -143,6 +143,21 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
 
         var fixedArgs = HevcBsfRegex.Replace(args, string.Empty);
         fixedArgs = Dvh1TagRegex.Replace(fixedArgs, string.Empty);
+
+        if (fixedArgs.Contains("-fflags +genpts", StringComparison.Ordinal)
+            && !fixedArgs.Contains("+igndts", StringComparison.Ordinal))
+        {
+            fixedArgs = fixedArgs.Replace(
+                "-fflags +genpts",
+                "-fflags +genpts+igndts+discardcorrupt",
+                StringComparison.Ordinal);
+        }
+
+        fixedArgs = fixedArgs.Replace(
+            "-avoid_negative_ts disabled",
+            "-avoid_negative_ts make_zero",
+            StringComparison.Ordinal);
+        fixedArgs = fixedArgs.Replace("-start_at_zero ", string.Empty, StringComparison.Ordinal);
 
         if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
             fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");

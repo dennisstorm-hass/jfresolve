@@ -636,6 +636,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             info.SupportsDirectPlay = true;
             info.SupportsDirectStream = true;
             ApplyTorBoxHlsStreamMetadata(info);
+            info.IgnoreDts = true;
+            info.GenPtsInput = true;
             ApplyEstimatedSize(info);
             return;
         }
@@ -675,7 +677,11 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         ApplyEstimatedSize(info);
 
         if (deliveryKind == "HLS")
+        {
             ApplyTorBoxHlsStreamMetadata(info);
+            info.IgnoreDts = true;
+            info.GenPtsInput = true;
+        }
 
         _log.LogInformation(
             "Jfresolve: Direct-play TorBox {DeliveryKind} for {Context} (host={Host}, container={Container})",
@@ -726,6 +732,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                     stream.Profile = "Main";
                     stream.BitDepth = 8;
                     stream.IsAVC = true;
+                    stream.PixelFormat = "yuv420p";
                     stream.DvVersionMajor = null;
                     stream.DvVersionMinor = null;
                     stream.DvProfile = null;
@@ -739,6 +746,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 else if (stream.Type == MediaStreamType.Audio)
                 {
                     stream.Codec = "aac";
+                    stream.CodecTag = "mp4a";
                     stream.Profile = "LC";
                     if (stream.Channels is null or > 2)
                     {
@@ -749,7 +757,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             }
         }
 
-        info.MediaStreams = streams;
+        info.MediaStreams = streams
+            .Where(s => s.Type is MediaStreamType.Video or MediaStreamType.Audio)
+            .ToList();
         info.Size = null;
     }
 
