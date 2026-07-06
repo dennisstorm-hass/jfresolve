@@ -9,6 +9,7 @@ using Jellyfin.Data;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jfresolve.Services;
+using Jfresolve;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.IO;
@@ -325,11 +326,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             {
                 if (SourceMatchesPlayingItem(item, info))
                 {
-                    ApplyTorBoxHlsStreamMetadata(info);
                     if (!IsTorBoxHlsPluginPath(info.Path) && IsResolvePath(item.Path))
                         ApplyTorBoxHlsPluginDelivery(info, item.Path, item.Name);
                     else if (IsTorBoxHlsPluginPath(info.Path))
-                        ApplyTorBoxHlsDeliveryFlags(info);
+                        ApplyTorBoxHlsStreamMetadata(info);
                 }
             }
         }
@@ -359,7 +359,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         foreach (var info in sources)
         {
             if (IsTorBoxHlsPluginPath(info.Path))
-                ApplyTorBoxHlsDeliveryFlags(info);
+                ApplyTorBoxHlsPlaybackTrick(info);
         }
 
         _log.LogDebug("Jfresolve: Returning {Count} total playback sources", sources.Count);
@@ -656,7 +656,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
         if (IsTorBoxHlsPluginPath(info.Path))
         {
-            ApplyTorBoxHlsDeliveryFlags(info);
+            ApplyTorBoxHlsStreamFlags(info);
             return;
         }
 
@@ -729,8 +729,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     private void ApplyTorBoxHlsPluginDelivery(MediaSourceInfo info, string resolvePath, string contextName)
     {
-        info.Path = NormalizeToPluginRelativePath(ToTorBoxHlsPluginPath(resolvePath));
-        ApplyTorBoxHlsDeliveryFlags(info);
+        info.Path = ToAbsolutePluginUrl(ToTorBoxHlsPluginPath(resolvePath));
+        ApplyTorBoxHlsStreamFlags(info);
         _log.LogInformation(
             "Jfresolve: TorBox HLS via plugin stream.m3u8 for {Context}: {Path}",
             contextName,
@@ -738,13 +738,12 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
     }
 
     /// <summary>
-    /// Gelato pattern: local File protocol + IsRemote=false so the client streams through
-    /// the plugin URL instead of FFmpeg remux/transcode on TorBox MPEG-TS HLS.
+    /// Shared TorBox HLS stream flags. Http + IsRemote for probe/FFmpeg; Gelato trick applied separately.
     /// </summary>
-    private static void ApplyTorBoxHlsDeliveryFlags(MediaSourceInfo info)
+    private static void ApplyTorBoxHlsStreamFlags(MediaSourceInfo info)
     {
-        info.Protocol = MediaProtocol.File;
-        info.IsRemote = false;
+        info.Protocol = MediaProtocol.Http;
+        info.IsRemote = true;
         info.Container = "m3u8";
         info.SupportsDirectPlay = true;
         info.SupportsDirectStream = false;
@@ -755,14 +754,37 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         ApplyEstimatedSize(info);
     }
 
-    private static string NormalizeToPluginRelativePath(string path)
+    /// <summary>
+    /// Gelato pattern: only on PlaybackInfo, fake local file so the client direct-plays the plugin URL.
+    /// </summary>
+    private void ApplyTorBoxHlsPlaybackTrick(MediaSourceInfo info)
+    {
+        if (_httpContextAccessor.HttpContext?.GetActionName() != "GetPostedPlaybackInfo")
+            return;
+
+        info.IsRemote = false;
+        info.Protocol = MediaProtocol.File;
+        _log.LogInformation(
+            "Jfresolve: Gelato playback trick for TorBox HLS — native plugin stream.m3u8");
+    }
+
+    private string ToAbsolutePluginUrl(string path)
     {
         if (string.IsNullOrWhiteSpace(path))
             return path;
 
+        if (Uri.TryCreate(path, UriKind.Absolute, out _))
+            return path;
+
         const string marker = "/Plugins/Jfresolve/";
         var idx = path.IndexOf(marker, StringComparison.OrdinalIgnoreCase);
-        return idx >= 0 ? path[idx..] : path;
+        var relative = idx >= 0 ? path[idx..] : (path.StartsWith('/') ? path : "/" + path);
+
+        var ctx = _httpContextAccessor.HttpContext;
+        if (ctx?.Request != null)
+            return $"{ctx.Request.Scheme}://{ctx.Request.Host}{relative}";
+
+        return relative;
     }
 
     private static bool IsTorBoxHlsPluginPath(string? path) =>
@@ -1053,7 +1075,11 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 ApplySeekHlsPath(source);
 
             if (IsTorBoxHlsPluginPath(source.Path))
-                ApplyTorBoxHlsDeliveryFlags(source);
+            {
+                source.Path = ToAbsolutePluginUrl(source.Path);
+                ApplyTorBoxHlsStreamFlags(source);
+                ApplyTorBoxHlsPlaybackTrick(source);
+            }
         }
         
         return source;

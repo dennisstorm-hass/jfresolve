@@ -24,6 +24,9 @@ public static class ResolvePathParser
         if (string.IsNullOrWhiteSpace(path))
             return false;
 
+        if (path.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+            path = path[5..];
+
         var lower = path.ToLowerInvariant();
         var markerIndex = lower.IndexOf(ResolveMarker, StringComparison.Ordinal);
         if (markerIndex < 0)

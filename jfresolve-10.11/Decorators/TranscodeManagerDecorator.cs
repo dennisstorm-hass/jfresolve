@@ -41,7 +41,7 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private static readonly Regex FfmpegInputRegex = new(
-        @"-i\s+""([^""]+)""",
+        @"-i\s+(?:file:)?""([^""]+)""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly ITranscodeManager _inner;
@@ -93,7 +93,7 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
                 seekTicks / 10_000_000.0);
         }
 
-        var fixedArgs = FixTorBoxHlsFfmpegArgs(TryReplacePluginHlsInputWithTorBoxCdn(commandLineArguments));
+        var fixedArgs = FixTorBoxHlsFfmpegArgs(TryReplacePluginHlsInputWithTorBoxCdn(commandLineArguments, state));
         if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
         {
             _log.LogInformation(
@@ -144,28 +144,42 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         return false;
     }
 
-    private string TryReplacePluginHlsInputWithTorBoxCdn(string args)
+    private string TryReplacePluginHlsInputWithTorBoxCdn(string args, StreamState state)
     {
         var match = FfmpegInputRegex.Match(args);
         if (!match.Success)
             return args;
 
-        var inputUrl = match.Groups[1].Value;
+        var inputUrl = NormalizeFfmpegInputUrl(match.Groups[1].Value);
         if (!inputUrl.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
-            || !inputUrl.Contains("stream.m3u8", StringComparison.OrdinalIgnoreCase)
-            || !ResolvePathParser.TryParse(inputUrl, out var parsed))
+            || !inputUrl.Contains("stream.m3u8", StringComparison.OrdinalIgnoreCase))
         {
             return args;
         }
 
-        if (!TorBoxPlaybackCache.TryGetHlsUrl(parsed.Type, parsed.Id, parsed.Season, parsed.Episode, out var hlsUrl))
+        ParsedResolvePath parsed = default;
+        var hasParsed = ResolvePathParser.TryParse(inputUrl, out parsed);
+        if (!hasParsed && state?.MediaSource?.Path != null)
+            hasParsed = ResolvePathParser.TryParse(state.MediaSource.Path, out parsed);
+
+        if (!hasParsed
+            || !TorBoxPlaybackCache.TryGetHlsUrl(parsed.Type, parsed.Id, parsed.Season, parsed.Episode, out var hlsUrl))
+        {
             return args;
+        }
 
         _log.LogInformation(
             "Jfresolve: FFmpeg input → direct TorBox HLS CDN for {Type}/{Id} (bypass plugin stream.m3u8)",
             parsed.Type,
             parsed.Id);
-        return args.Replace(inputUrl, hlsUrl, StringComparison.Ordinal);
+        return args.Replace(match.Groups[1].Value, hlsUrl, StringComparison.Ordinal);
+    }
+
+    private static string NormalizeFfmpegInputUrl(string inputUrl)
+    {
+        if (inputUrl.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
+            inputUrl = inputUrl[5..];
+        return inputUrl;
     }
 
     private static string FixTorBoxHlsFfmpegArgs(string args)
