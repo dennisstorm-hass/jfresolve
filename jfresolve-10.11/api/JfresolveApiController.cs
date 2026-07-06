@@ -302,7 +302,7 @@ public class JfresolveApiController : ControllerBase
         }
 
         var isHlsPath = Request.Path.Value?.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase) == true;
-        var seekHls = !string.IsNullOrWhiteSpace(config.TorBoxApiKey) && DetectTorBoxSeekHls(type, id);
+        var seekHls = !string.IsNullOrWhiteSpace(config.TorBoxApiKey) && DetectTorBoxSeekHls();
 
         if (!seekHls)
         {
@@ -328,15 +328,11 @@ public class JfresolveApiController : ControllerBase
 
         if (seekHls)
         {
-            SeekPositionCache.MarkSeekRestart();
             forceHls = true;
             _logger.LogInformation(
-                "Jfresolve: Seek detected for {Type}/{Id} — serving TorBox HLS at resolve path",
+                "Jfresolve: Seek position pending for {Type}/{Id} — serving TorBox HLS at resolve path",
                 type, id);
         }
-
-        if (forceHls)
-            SeekPositionCache.MarkSeekRestart();
 
         // Per-user preference: use user's setting when userId is present, otherwise global default
         var preferHdrOverDolbyVision = config.PreferHdrOverDolbyVision;
@@ -567,11 +563,17 @@ public class JfresolveApiController : ControllerBase
 
     private static readonly ConcurrentDictionary<string, (DateTime Started, long Bytes)> _activeStreamTransfers = new();
 
-    private static string BuildStreamSessionKey(string type, string id) => $"{type}/{id}";
-
-    private static void BeginStreamTransfer(string type, string id)
+    private static string BuildStreamSessionKey(string type, string id, string? season = null, string? episode = null)
     {
-        _activeStreamTransfers[BuildStreamSessionKey(type, id)] = (DateTime.UtcNow, 0);
+        var key = $"{type}/{id}";
+        if (!string.IsNullOrEmpty(season) && !string.IsNullOrEmpty(episode))
+            key += $":{season}:{episode}";
+        return key;
+    }
+
+    private static void BeginStreamTransfer(string type, string id, string? season = null, string? episode = null)
+    {
+        _activeStreamTransfers[BuildStreamSessionKey(type, id, season, episode)] = (DateTime.UtcNow, 0);
     }
 
     private static void UpdateStreamTransfer(string type, string id, long bytesWritten)
@@ -588,28 +590,8 @@ public class JfresolveApiController : ControllerBase
         _activeStreamTransfers.TryRemove(BuildStreamSessionKey(type, id), out _);
     }
 
-    private bool DetectTorBoxSeekHls(string type, string id)
-    {
-        if (SeekPositionCache.TryPeekPending() is > 0)
-            return true;
-
-        var key = BuildStreamSessionKey(type, id);
-        if (_activeHlsPlayback.TryGetValue(key, out var hlsStartedAt)
-            && DateTime.UtcNow - hlsStartedAt <= HlsPlaybackSessionWindow)
-        {
-            return true;
-        }
-
-        if (_recentPlaybackDisconnects.TryGetValue(key, out var disconnectedAt)
-            && DateTime.UtcNow - disconnectedAt <= SeekDetectionWindow)
-        {
-            return true;
-        }
-
-        return _activeStreamTransfers.TryGetValue(key, out var state)
-            && state.Bytes >= SeekDetectionMinBytes
-            && DateTime.UtcNow - state.Started < TimeSpan.FromMinutes(2);
-    }
+    private static bool DetectTorBoxSeekHls() =>
+        SeekPositionCache.TryPeekPending() is > 0;
 
     private static void ClearActiveHlsPlayback(string type, string id)
     {
@@ -640,40 +622,8 @@ public class JfresolveApiController : ControllerBase
         SeekPositionCache.MarkSeekRestart();
     }
 
-    private bool ShouldPreferHlsForSeek(string type, string id)
-    {
-        if (!DetectTorBoxSeekHls(type, id))
-            return false;
-
-        var key = BuildStreamSessionKey(type, id);
-        if (_activeHlsPlayback.TryGetValue(key, out var hlsStartedAt)
-            && DateTime.UtcNow - hlsStartedAt <= HlsPlaybackSessionWindow)
-        {
-            _logger.LogInformation(
-                "Jfresolve: Continuing TorBox HLS delivery for {Key} (subsequent seek)",
-                key);
-            return true;
-        }
-
-        if (_recentPlaybackDisconnects.ContainsKey(key))
-        {
-            _logger.LogInformation(
-                "Jfresolve: Recent playback disconnect for {Key} — using TorBox HLS for seek",
-                key);
-            _recentPlaybackDisconnects.TryRemove(key, out _);
-            return true;
-        }
-
-        if (_activeStreamTransfers.TryGetValue(key, out var state) && state.Bytes >= SeekDetectionMinBytes)
-        {
-            _logger.LogInformation(
-                "Jfresolve: Active stream transfer for {Key} (~{Bytes} bytes) — using TorBox HLS for seek",
-                key, state.Bytes);
-            return true;
-        }
-
-        return true;
-    }
+    private bool ShouldPreferHlsForSeek(string type, string id) =>
+        DetectTorBoxSeekHls();
 
     private static void MarkActiveHlsPlayback(string type, string id)
     {
@@ -993,7 +943,8 @@ public class JfresolveApiController : ControllerBase
 
         var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
         var useDirectSegmentUrls = IsTorBoxHlsPlaylistUrl(playlistUrl);
-        long? runtimeTicks = TorBoxPlaybackCache.TryGetRuntimeTicks(type, id);
+        var season = Request.Query["season"].FirstOrDefault();
+        var episode = Request.Query["episode"].FirstOrDefault();
         long? seekTicks = SeekPositionCache.TryPeekPending();
         if (useDirectSegmentUrls)
         {
@@ -1005,47 +956,14 @@ public class JfresolveApiController : ControllerBase
                     seekTicks.Value / 10_000_000.0, type, id);
             }
 
-            var segmentCount = ParseHlsMediaSegments(playlist).Count;
-            if (runtimeTicks.HasValue)
-            {
-                _logger.LogInformation(
-                    "Jfresolve: Correcting TorBox HLS segment durations for {Type}/{Id} ({TotalSeconds:F0}s runtime, {SegmentCount} segments)",
-                    type, id, runtimeTicks.Value / 10_000_000.0, segmentCount);
-            }
-            else
-            {
-                _logger.LogWarning(
-                    "Jfresolve: TorBox HLS runtime unknown for {Type}/{Id} — segment durations may be inaccurate for seek",
-                    type, id);
-            }
-
-            if (seekTicks.HasValue && runtimeTicks.HasValue && segmentCount > 0)
-            {
-                var segmentSeconds = runtimeTicks.Value / 10_000_000.0 / segmentCount;
-                var trimIndex = (int)Math.Floor(seekTicks.Value / 10_000_000.0 / segmentSeconds);
-                _logger.LogInformation(
-                    "Jfresolve: Trimming TorBox HLS playlist for {Type}/{Id} from segment {SegmentIndex}",
-                    type, id, trimIndex);
-            }
-
             _logger.LogInformation(
-                "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
+                "Jfresolve: Passing through TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
                 type, id);
         }
 
-        var proxyBase = BuildHlsProxyBaseUrl(userId);
-        string rewritten;
-        if (useDirectSegmentUrls && !runtimeTicks.HasValue)
-        {
-            _logger.LogInformation(
-                "Jfresolve: Passing through TorBox HLS segment timing with direct CDN URLs for {Type}/{Id}",
-                type, id);
-            rewritten = RewriteHlsPlaylistDirectPassthrough(playlist, playlistUrl);
-        }
-        else
-        {
-            rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls, runtimeTicks, seekTicks);
-        }
+        string rewritten = useDirectSegmentUrls
+            ? RewriteHlsPlaylistDirectPassthrough(playlist, playlistUrl)
+            : RewriteHlsPlaylistPassthrough(playlist, playlistUrl, BuildHlsProxyBaseUrl(userId));
         SeekPositionCache.TryConsumePending();
         return Content(rewritten, "application/vnd.apple.mpegurl");
     }

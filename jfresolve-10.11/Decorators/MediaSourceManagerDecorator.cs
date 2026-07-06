@@ -774,22 +774,15 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             return;
 
         var path = info.Path;
-        var movieIdx = path.IndexOf("/resolve/movie/", StringComparison.OrdinalIgnoreCase);
-        if (movieIdx >= 0)
+        if (ResolvePathParser.TryParse(path, out var parsed))
         {
-            var id = path[(movieIdx + "/resolve/movie/".Length)..].Split('?', '/')[0];
-            if (!string.IsNullOrWhiteSpace(id))
-                TorBoxPlaybackCache.SetRuntimeTicks("movie", id, info.RunTimeTicks.Value);
-            return;
+            TorBoxPlaybackCache.SetRuntimeTicks(
+                parsed.Type,
+                parsed.Id,
+                info.RunTimeTicks.Value,
+                parsed.Season,
+                parsed.Episode);
         }
-
-        var seriesIdx = path.IndexOf("/resolve/series/", StringComparison.OrdinalIgnoreCase);
-        if (seriesIdx < 0)
-            return;
-
-        var seriesId = path[(seriesIdx + "/resolve/series/".Length)..].Split('?', '/')[0];
-        if (!string.IsNullOrWhiteSpace(seriesId))
-            TorBoxPlaybackCache.SetRuntimeTicks("series", seriesId, info.RunTimeTicks.Value);
     }
 
     /// <summary>

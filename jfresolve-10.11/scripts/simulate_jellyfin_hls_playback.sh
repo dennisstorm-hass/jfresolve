@@ -72,6 +72,16 @@ cd "$WORKDIR"
 test -s out-init.mp4 && test -s out-seg0.mp4 || fail "empty remux segments"
 log "fixed remux: OK (init=$(stat -f%z out-init.mp4 2>/dev/null || stat -c%s out-init.mp4)B seg0=$(stat -f%z out-seg0.mp4 2>/dev/null || stat -c%s out-seg0.mp4)B)"
 
+log "== 6. FFmpeg bypass: direct TorBox HLS as Jellyfin input (1.0.0.94) =="
+"$FFMPEG" -hide_banner -v warning -analyzeduration 200M -probesize 1G -fflags +genpts \
+  -i "$HLS" -map 0:v:0 -map 0:a:0 \
+  -codec:v copy -bsf:a aac_adtstoasc -codec:a copy -max_muxing_queue_size 2048 \
+  -f hls -hls_time 6 -hls_segment_type fmp4 \
+  -hls_fmp4_init_filename 'bypass-init.mp4' -hls_segment_filename 'bypass-seg%d.mp4' \
+  -t 8 -y "$WORKDIR/bypass-out.m3u8" 2>"$WORKDIR/bypass.log" || { tail -10 "$WORKDIR/bypass.log"; fail "bypass remux"; }
+test -s "$WORKDIR/bypass-init.mp4" || fail "empty bypass init"
+log "direct TorBox HLS as FFmpeg input: OK"
+
 echo ""
 echo "ALL SIMULATION CHECKS PASSED"
-echo "Root cause: createstream HLS is h264/aac; Jellyfin must not use hevc_mp4toannexb/dvh1 from /dld/ probe metadata."
+echo "Root cause: createstream HLS is h264/aac; Jellyfin must use direct TorBox HLS for FFmpeg -i (not plugin proxy)."

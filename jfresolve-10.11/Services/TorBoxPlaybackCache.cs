@@ -43,17 +43,17 @@ public static class TorBoxPlaybackCache
         return false;
     }
 
-    public static void SetRuntimeTicks(string type, string id, long ticks)
+    public static void SetRuntimeTicks(string type, string id, long ticks, string? season = null, string? episode = null)
     {
         if (ticks <= 0)
             return;
 
-        RuntimeTicks[BuildKey(type, id)] = ticks;
+        RuntimeTicks[BuildPlaybackKey(type, id, season, episode)] = ticks;
     }
 
-    public static long? TryGetRuntimeTicks(string type, string id)
+    public static long? TryGetRuntimeTicks(string type, string id, string? season = null, string? episode = null)
     {
-        return RuntimeTicks.TryGetValue(BuildKey(type, id), out var ticks) && ticks > 0
+        return RuntimeTicks.TryGetValue(BuildPlaybackKey(type, id, season, episode), out var ticks) && ticks > 0
             ? ticks
             : null;
     }
