@@ -46,6 +46,7 @@ public sealed class PlaybackStreamResolver
     private readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
     private readonly ConcurrentDictionary<string, (string RedirectUrl, DateTime Expiry)> _redirectUrlCache = new();
     private readonly ConcurrentDictionary<string, (string Url, string Container, DateTime Expiry)> _deliveryUrlCache = new();
+    private readonly ConcurrentDictionary<string, Task<string?>> _inflightDeliveryResolves = new();
     private static readonly TimeSpan DeliveryUrlCacheLifetime = TimeSpan.FromMinutes(45);
     private DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
     private DateTime _lastRedirectUrlCacheCleanup = DateTime.UtcNow;
@@ -108,6 +109,33 @@ public sealed class PlaybackStreamResolver
                 request.Id);
             return cachedDelivery.Url;
         }
+
+        var inflight = _inflightDeliveryResolves.GetOrAdd(
+            cacheKey,
+            _ => ResolveStreamUrlCoreAsync(request, cancellationToken));
+        try
+        {
+            return await inflight.ConfigureAwait(false);
+        }
+        finally
+        {
+            if (_inflightDeliveryResolves.TryGetValue(cacheKey, out var current) && ReferenceEquals(current, inflight))
+                _inflightDeliveryResolves.TryRemove(cacheKey, out _);
+        }
+    }
+
+    private async Task<string?> ResolveStreamUrlCoreAsync(
+        StreamResolveRequest request,
+        CancellationToken cancellationToken)
+    {
+        var config = JfresolvePlugin.Instance?.Configuration;
+        if (config == null)
+            return null;
+
+        var cacheKey = BuildDeliveryUrlCacheKey(request);
+        var now = DateTime.UtcNow;
+        if (TryGetCachedDeliveryUrl(cacheKey, now, out var cachedDelivery))
+            return cachedDelivery.Url;
 
         var redirectCacheKey = BuildRedirectUrlCacheKey(request);
 

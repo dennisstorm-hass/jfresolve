@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.92",
+        "changelog": "Fix TorBox HLS infinite loading: serve direct CDN segment URLs to FFmpeg (manifest via plugin only), preserve native EXTINF when runtime unknown, dedupe in-flight resolves, use /dld/ only for non-HLS probe requests.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.92/jfresolve.zip",
+        "checksum": "31aab5b8a32a3d11b0e200eac506b585",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T10:25:00Z"
+      },
+      {
         "version": "1.0.0.91",
         "changelog": "Restore TorBox createstream HLS as primary delivery (streamed via plugin stream.m3u8 proxy). /dld/ MP4 is fallback only when createstream is unavailable. Unified delivery cache for fast playlist response.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.91/jfresolve.zip",

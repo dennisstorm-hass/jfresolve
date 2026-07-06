@@ -849,10 +849,55 @@ public class JfresolveApiController : ControllerBase
                 continue;
 
             sb.Append(CultureInfo.InvariantCulture, $"#EXTINF:{segmentSeconds:F3},\n");
-            sb.AppendLine(BuildHlsProxyUrl(proxyBaseUrl, absoluteUrl));
+            sb.AppendLine(absoluteUrl);
         }
 
         sb.AppendLine("#EXT-X-ENDLIST");
+        return sb.ToString();
+    }
+
+    /// <summary>
+    /// Resolve relative segment URLs to absolute TorBox CDN URLs while preserving original EXTINF timing.
+    /// </summary>
+    private static string RewriteHlsPlaylistDirectPassthrough(string playlist, string playlistUrl)
+    {
+        Uri.TryCreate(playlistUrl, UriKind.Absolute, out var playlistUri);
+        var sb = new StringBuilder(playlist.Length + 256);
+
+        foreach (var line in playlist.Split('\n'))
+        {
+            var trimmed = line.TrimEnd('\r');
+            if (trimmed.Length == 0 || trimmed.StartsWith('#'))
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            string absoluteUrl;
+            if (Uri.TryCreate(trimmed, UriKind.Absolute, out var absoluteUri))
+            {
+                absoluteUrl = absoluteUri.ToString();
+            }
+            else if (playlistUri != null && Uri.TryCreate(playlistUri, trimmed, out var relativeUri))
+            {
+                absoluteUrl = relativeUri.ToString();
+            }
+            else
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            absoluteUrl = AppendTorBoxPlaylistQuery(absoluteUrl, playlistUri);
+            if (!IsValidStreamUrl(absoluteUrl))
+            {
+                sb.AppendLine(trimmed);
+                continue;
+            }
+
+            sb.AppendLine(absoluteUrl);
+        }
+
         return sb.ToString();
     }
 
@@ -972,12 +1017,23 @@ public class JfresolveApiController : ControllerBase
             }
 
             _logger.LogInformation(
-                "Jfresolve: Rewriting TorBox HLS playlist with proxied segment URLs for {Type}/{Id}",
+                "Jfresolve: Rewriting TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
                 type, id);
         }
 
         var proxyBase = BuildHlsProxyBaseUrl(userId);
-        var rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls, runtimeTicks, seekTicks);
+        string rewritten;
+        if (useDirectSegmentUrls && !runtimeTicks.HasValue)
+        {
+            _logger.LogInformation(
+                "Jfresolve: Passing through TorBox HLS segment timing with direct CDN URLs for {Type}/{Id}",
+                type, id);
+            rewritten = RewriteHlsPlaylistDirectPassthrough(playlist, playlistUrl);
+        }
+        else
+        {
+            rewritten = RewriteHlsPlaylist(playlist, playlistUrl, proxyBase, useDirectSegmentUrls, runtimeTicks, seekTicks);
+        }
         SeekPositionCache.TryConsumePending();
         return Content(rewritten, "application/vnd.apple.mpegurl");
     }
