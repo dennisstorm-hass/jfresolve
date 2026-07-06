@@ -9,6 +9,7 @@ using Jellyfin.Data;
 using Jellyfin.Data.Enums;
 using Jellyfin.Database.Implementations.Entities;
 using Jfresolve.Services;
+using Jfresolve;
 using MediaBrowser.Controller.Entities;
 using MediaBrowser.Controller.Entities.Movies;
 using MediaBrowser.Controller.IO;
@@ -358,7 +359,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         foreach (var info in sources)
         {
             if (IsTorBoxHlsPluginPath(info.Path))
+            {
                 ApplyTorBoxHlsStreamFlags(info);
+                ApplyTorBoxHlsPlaybackTrick(info);
+            }
         }
 
         _log.LogDebug("Jfresolve: Returning {Count} total playback sources", sources.Count);
@@ -748,10 +752,28 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.SupportsDirectPlay = true;
         info.SupportsDirectStream = false;
         info.SupportsTranscoding = false;
+        info.SupportsProbing = false;
+        info.ReadAtNativeFramerate = true;
+        // Default Jellyfin probe is 200s of HLS (analyzeduration 200M) — cap to 5s for TorBox HLS startup.
+        info.AnalyzeDurationMs = 5000;
         ApplyTorBoxHlsStreamMetadata(info);
         info.IgnoreDts = true;
         info.GenPtsInput = true;
         ApplyEstimatedSize(info);
+    }
+
+    /// <summary>
+    /// Gelato IsRemote=false on PlaybackInfo only — keeps Http/m3u8 (not File protocol).
+    /// Helps Safari/clients native-play plugin stream.m3u8 instead of FFmpeg remux when possible.
+    /// </summary>
+    private void ApplyTorBoxHlsPlaybackTrick(MediaSourceInfo info)
+    {
+        if (_httpContextAccessor.HttpContext?.GetActionName() != "GetPostedPlaybackInfo")
+            return;
+
+        info.IsRemote = false;
+        _log.LogInformation(
+            "Jfresolve: Gelato IsRemote=false for TorBox HLS PlaybackInfo (native plugin stream.m3u8)");
     }
 
     private string ToAbsolutePluginUrl(string path)
@@ -1064,6 +1086,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             {
                 source.Path = ToAbsolutePluginUrl(source.Path);
                 ApplyTorBoxHlsStreamFlags(source);
+                ApplyTorBoxHlsPlaybackTrick(source);
             }
         }
         

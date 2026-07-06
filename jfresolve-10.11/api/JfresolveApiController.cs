@@ -183,6 +183,16 @@ public class JfresolveApiController : ControllerBase
         return string.Empty;
     }
 
+    private bool IsLikelyFfmpegClient()
+    {
+        var userAgent = GetRequestHeaderValue("User-Agent");
+        if (string.IsNullOrWhiteSpace(userAgent))
+            return false;
+
+        return userAgent.Contains("ffmpeg", StringComparison.OrdinalIgnoreCase)
+               || userAgent.Contains("Lavf/", StringComparison.OrdinalIgnoreCase);
+    }
+
     private void SetResponseHeaderValue(string name, string value)
     {
         var headers = Response?.Headers;
@@ -953,7 +963,9 @@ public class JfresolveApiController : ControllerBase
         }
 
         var playlist = await response.Content.ReadAsStringAsync(cancellationToken);
-        var useDirectSegmentUrls = IsTorBoxHlsPlaylistUrl(playlistUrl);
+        var isTorBoxPlaylist = IsTorBoxHlsPlaylistUrl(playlistUrl);
+        // Browsers/Safari: direct CDN segments (native HLS). FFmpeg/Lavf: proxy segments through plugin (stable auth/timeouts).
+        var useDirectSegmentUrls = isTorBoxPlaylist && !IsLikelyFfmpegClient();
         var season = Request.Query["season"].FirstOrDefault();
         var episode = Request.Query["episode"].FirstOrDefault();
         long? seekTicks = SeekPositionCache.TryPeekPending();
@@ -969,6 +981,12 @@ public class JfresolveApiController : ControllerBase
 
             _logger.LogInformation(
                 "Jfresolve: Passing through TorBox HLS playlist with direct CDN segment URLs for {Type}/{Id}",
+                type, id);
+        }
+        else if (isTorBoxPlaylist)
+        {
+            _logger.LogInformation(
+                "Jfresolve: Proxying TorBox HLS segments through plugin for FFmpeg/Lavf client ({Type}/{Id})",
                 type, id);
         }
 

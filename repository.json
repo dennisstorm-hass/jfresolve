@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.104",
-        "changelog": "Stop FFmpeg CDN bypass for TorBox HLS — keep plugin stream.m3u8 so segment URLs get token query params. Log verbatim data.hls_url from API. Fix max_muxing_queue_size placement.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.104/jfresolve.zip",
-        "checksum": "9a54d9db74c6efabdaca774c0bafe6f5",
+        "version": "1.0.0.105",
+        "changelog": "Cap TorBox HLS FFmpeg probe to 5s (was 200s). Gelato IsRemote=false on PlaybackInfo (Http, not File). Proxy HLS segments through plugin for FFmpeg/Lavf; direct CDN for browsers.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.105/jfresolve.zip",
+        "checksum": "92bebfbd1904669a923358d0c2b450e9",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T12:00:00Z"
+        "timestamp": "2026-07-06T12:05:00Z"
       },
       {
         "version": "1.0.0.93",
