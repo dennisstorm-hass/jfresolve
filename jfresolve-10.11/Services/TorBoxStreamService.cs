@@ -30,7 +30,7 @@ public class TorBoxStreamService
     private const string TorBoxStreamApi = $"{TorBoxApiBase}/stream";
 
     private static readonly Regex TorrentioTorBoxResolveRegex = new(
-        @"/resolve/torbox/[^/]+/(?<hash>[a-fA-F0-9]{40})/[^/]+/(?<fileIndex>\d+)/",
+        @"/resolve/torbox/[^/]+/(?<hash>[a-fA-F0-9]{40})/(?<fileName>[^/?#]+)/(?<fileIndex>\d+)/",
         RegexOptions.Compiled | RegexOptions.CultureInvariant);
 
     private readonly IHttpClientFactory _httpClientFactory;
@@ -81,10 +81,11 @@ public class TorBoxStreamService
                 torBoxApiKey, requestDlRef, infoHash: null, fileIndex: null, streamUrl, preferHlsForSeek, forceHls, cancellationToken);
         }
 
-        if (!TryParseTorrentioTorBoxUrl(streamUrl, out var infoHash, out var fileIndex))
+        if (!TryParseTorrentioTorBoxUrl(streamUrl, out var infoHash, out var fileIndex, out var fileName))
             return null;
 
-        var torrentRef = await TryResolveTorrentRefFromMyListAsync(torBoxApiKey, infoHash, fileIndex, cancellationToken);
+        var torrentRef = await TryResolveTorrentRefFromMyListAsync(
+            torBoxApiKey, infoHash, fileIndex, fileName, cancellationToken);
         if (!torrentRef.HasValue)
         {
             var fromRedirect = await TryDiscoverRequestDlPermalinkAsync(streamUrl, cancellationToken);
@@ -267,16 +268,22 @@ public class TorBoxStreamService
 
     private readonly record struct TorrentRef(string TorrentId, string FileId);
 
-    private static bool TryParseTorrentioTorBoxUrl(string url, out string infoHash, out int fileIndex)
+    private static bool TryParseTorrentioTorBoxUrl(
+        string url,
+        out string infoHash,
+        out int fileIndex,
+        out string? fileName)
     {
         infoHash = string.Empty;
         fileIndex = 0;
+        fileName = null;
 
         var match = TorrentioTorBoxResolveRegex.Match(url);
         if (!match.Success)
             return false;
 
         infoHash = match.Groups["hash"].Value.ToLowerInvariant();
+        fileName = Uri.UnescapeDataString(match.Groups["fileName"].Value);
         return int.TryParse(match.Groups["fileIndex"].Value, out fileIndex);
     }
 
@@ -284,6 +291,7 @@ public class TorBoxStreamService
         string apiKey,
         string infoHash,
         int fileIndex,
+        string? fileName,
         CancellationToken cancellationToken)
     {
         try
@@ -323,10 +331,10 @@ public class TorBoxStreamService
                 if (string.IsNullOrWhiteSpace(torrentId))
                     continue;
 
-                var fileId = ResolveFileId(torrent, fileIndex);
-                _logger.LogDebug(
-                    "Jfresolve: Mapped Torrentio file index {FileIndex} to TorBox file_id {FileId} for hash {Hash}",
-                    fileIndex, fileId, infoHash);
+                var fileId = ResolveFileId(torrent, fileIndex, fileName);
+                _logger.LogInformation(
+                    "Jfresolve: Mapped Torrentio stream to TorBox file_id {FileId} for hash {Hash} (torrentioIndex={FileIndex}, fileName={FileName})",
+                    fileId, infoHash, fileIndex, fileName ?? "n/a");
                 return new TorrentRef(torrentId, fileId);
             }
         }
@@ -740,16 +748,24 @@ public class TorBoxStreamService
     }
 
     /// <summary>
-    /// Maps Torrentio's file index (0-based position in the torrent) to TorBox's file_id for requestdl/createstream.
+    /// Maps a Torrentio resolve URL to TorBox file_id for requestdl/createstream.
+    /// Torrentio's numeric index is not the same as TorBox file_id — match by filename first.
     /// </summary>
-    private static string ResolveFileId(JsonElement torrent, int fileIndex)
+    private static string ResolveFileId(JsonElement torrent, int fileIndex, string? fileName)
     {
         if (!torrent.TryGetProperty("files", out var files) || files.ValueKind != JsonValueKind.Array)
             return fileIndex.ToString();
 
         var fileList = files.EnumerateArray().ToList();
 
-        // Torrentio/Stremio put the array index in resolve URLs (e.g. .../hash/name/3/video.mp4).
+        if (!string.IsNullOrWhiteSpace(fileName))
+        {
+            var byName = TryResolveFileIdByName(fileList, fileName);
+            if (byName != null)
+                return byName;
+        }
+
+        // Torrentio index can match array position when ids align (single-file torrents).
         if (fileIndex >= 0 && fileIndex < fileList.Count)
         {
             var file = fileList[fileIndex];
@@ -761,7 +777,6 @@ public class TorBoxStreamService
             }
         }
 
-        // Some torrents use TorBox file ids that match the index directly.
         foreach (var file in fileList)
         {
             if (!file.TryGetProperty("id", out var idProp))
@@ -775,6 +790,45 @@ public class TorBoxStreamService
         }
 
         return fileIndex.ToString();
+    }
+
+    private static string? TryResolveFileIdByName(IReadOnlyList<JsonElement> files, string fileName)
+    {
+        var target = Uri.UnescapeDataString(fileName).Trim();
+        if (string.IsNullOrWhiteSpace(target))
+            return null;
+
+        foreach (var file in files)
+        {
+            if (!file.TryGetProperty("id", out var idProp))
+                continue;
+
+            var id = idProp.ValueKind == JsonValueKind.Number
+                ? idProp.GetInt32().ToString()
+                : idProp.GetString();
+            if (string.IsNullOrWhiteSpace(id))
+                continue;
+
+            var shortName = GetJsonString(file, "short_name");
+            var fullName = GetJsonString(file, "name");
+            if (FileNameMatches(shortName, target) || FileNameMatches(fullName, target))
+                return id;
+        }
+
+        return null;
+    }
+
+    private static bool FileNameMatches(string? torrentName, string targetFileName)
+    {
+        if (string.IsNullOrWhiteSpace(torrentName))
+            return false;
+
+        if (torrentName.Equals(targetFileName, StringComparison.OrdinalIgnoreCase))
+            return true;
+
+        var slash = torrentName.LastIndexOf('/');
+        var leaf = slash >= 0 ? torrentName[(slash + 1)..] : torrentName;
+        return leaf.Equals(targetFileName, StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>
@@ -816,6 +870,9 @@ public class TorBoxStreamService
             if (string.IsNullOrWhiteSpace(cdnUrl) || !IsTorBoxStreamCdnUrl(cdnUrl))
                 return null;
 
+            if (!await ValidateCdnUrlIsVideoAsync(cdnUrl, torrentId, fileId, cancellationToken))
+                return null;
+
             return cdnUrl;
         }
         catch (Exception ex) when (ex is not OperationCanceledException)
@@ -825,6 +882,57 @@ public class TorBoxStreamService
                 "Jfresolve: TorBox requestdl redirect=false failed for torrent {TorrentId} file {FileId}",
                 torrentId, fileId);
             return null;
+        }
+    }
+
+    private async Task<bool> ValidateCdnUrlIsVideoAsync(
+        string cdnUrl,
+        string torrentId,
+        string fileId,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var client = _httpClientFactory.CreateClient("Jfresolve.Stream");
+            using var request = new HttpRequestMessage(HttpMethod.Get, cdnUrl);
+            request.Headers.Range = new System.Net.Http.Headers.RangeHeaderValue(0, 15);
+
+            using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogWarning(
+                    "Jfresolve: TorBox /dld/ validation failed HTTP {Status} for torrent {TorrentId} file {FileId}",
+                    (int)response.StatusCode, torrentId, fileId);
+                return false;
+            }
+
+            var contentType = response.Content.Headers.ContentType?.MediaType ?? string.Empty;
+            if (contentType.StartsWith("video/", StringComparison.OrdinalIgnoreCase)
+                || contentType.Equals("application/octet-stream", StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+
+            string? disposition = response.Content.Headers.ContentDisposition?.FileName;
+            if (disposition == null && response.Headers.TryGetValues("Content-Disposition", out var values))
+                disposition = values.FirstOrDefault();
+
+            _logger.LogWarning(
+                "Jfresolve: TorBox /dld/ returned non-video content ({ContentType}, {Disposition}) for torrent {TorrentId} file {FileId} — skipping CDN URL",
+                contentType,
+                disposition ?? "n/a",
+                torrentId,
+                fileId);
+            return false;
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogInformation(
+                ex,
+                "Jfresolve: TorBox /dld/ validation error for torrent {TorrentId} file {FileId}",
+                torrentId,
+                fileId);
+            return false;
         }
     }
 

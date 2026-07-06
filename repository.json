@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.87",
+        "changelog": "Fix TorBox file_id mapping: match Torrentio filename to TorBox short_name (Torrentio index 3 ≠ TorBox file_id 3). Validate /dld/ CDN returns video before use.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.87/jfresolve.zip",
+        "checksum": "a30430ce548df208e661e0751cc51677",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T09:25:00Z"
+      },
+      {
         "version": "1.0.0.86",
         "changelog": "Fix TorBox /dld/ serving wrong torrent file: map Torrentio file index to TorBox file_id by array position instead of falling back to the first file (TXT/NFO).",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.86/jfresolve.zip",
