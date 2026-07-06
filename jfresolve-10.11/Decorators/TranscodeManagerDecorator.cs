@@ -12,7 +12,8 @@ using Microsoft.Extensions.Logging;
 namespace Jfresolve.Decorators;
 
 /// <summary>
-/// Captures FFmpeg -ss seek offsets and fixes TorBox HLS transcode/remux args when Jellyfin still runs FFmpeg.
+/// Captures FFmpeg -ss seek offsets and fixes TorBox HLS remux args when Jellyfin still runs FFmpeg.
+/// FFmpeg must stay on plugin stream.m3u8 so TorBox segment URLs receive token query params.
 /// </summary>
 public sealed class TranscodeManagerDecorator : ITranscodeManager
 {
@@ -36,8 +37,8 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         @"-bsf:a\s+aac_adtstoasc\s*",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
-    private static readonly Regex FfmpegInputRegex = new(
-        @"-i\s+(?:file:)?""([^""]+)""",
+    private static readonly Regex FfmpegOutputRegex = new(
+        @"\s-y\s+""[^""]+""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly ITranscodeManager _inner;
@@ -89,7 +90,7 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
                 seekTicks / 10_000_000.0);
         }
 
-        var fixedArgs = FixTorBoxHlsFfmpegArgs(TryReplacePluginHlsInputWithTorBoxCdn(commandLineArguments, state));
+        var fixedArgs = FixTorBoxHlsFfmpegArgs(commandLineArguments);
         if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
         {
             _log.LogInformation(
@@ -140,44 +141,6 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         return false;
     }
 
-    private string TryReplacePluginHlsInputWithTorBoxCdn(string args, StreamState state)
-    {
-        var match = FfmpegInputRegex.Match(args);
-        if (!match.Success)
-            return args;
-
-        var inputUrl = NormalizeFfmpegInputUrl(match.Groups[1].Value);
-        if (!inputUrl.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
-            || !inputUrl.Contains("stream.m3u8", StringComparison.OrdinalIgnoreCase))
-        {
-            return args;
-        }
-
-        ParsedResolvePath parsed = default;
-        var hasParsed = ResolvePathParser.TryParse(inputUrl, out parsed);
-        if (!hasParsed && state?.MediaSource?.Path != null)
-            hasParsed = ResolvePathParser.TryParse(state.MediaSource.Path, out parsed);
-
-        if (!hasParsed
-            || !TorBoxPlaybackCache.TryGetHlsUrl(parsed.Type, parsed.Id, parsed.Season, parsed.Episode, out var hlsUrl))
-        {
-            return args;
-        }
-
-        _log.LogInformation(
-            "Jfresolve: FFmpeg input → direct TorBox HLS CDN for {Type}/{Id} (bypass plugin stream.m3u8)",
-            parsed.Type,
-            parsed.Id);
-        return args.Replace(match.Groups[1].Value, hlsUrl, StringComparison.Ordinal);
-    }
-
-    private static string NormalizeFfmpegInputUrl(string inputUrl)
-    {
-        if (inputUrl.StartsWith("file:", StringComparison.OrdinalIgnoreCase))
-            inputUrl = inputUrl[5..];
-        return inputUrl;
-    }
-
     private static string FixTorBoxHlsFfmpegArgs(string args)
     {
         if (!IsTorBoxHlsFfmpegInput(args))
@@ -213,9 +176,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         // TorBox createstream HLS is MPEG-TS AAC (not ADTS). aac_adtstoasc breaks remux and floods errors.
         fixedArgs = AacAdtsToAscRegex.Replace(fixedArgs, string.Empty);
 
+        // Keep FFmpeg on plugin stream.m3u8 so segment URLs get TorBox token query params from our playlist rewrite.
         if (!fixedArgs.Contains("-max_muxing_queue_size", StringComparison.OrdinalIgnoreCase))
         {
-            fixedArgs += " -max_muxing_queue_size 2048";
+            var outputMatch = FfmpegOutputRegex.Match(fixedArgs);
+            if (outputMatch.Success)
+                fixedArgs = fixedArgs.Insert(outputMatch.Index, " -max_muxing_queue_size 2048");
+            else
+                fixedArgs += " -max_muxing_queue_size 2048";
         }
 
         return fixedArgs;

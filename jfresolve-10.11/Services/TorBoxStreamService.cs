@@ -416,6 +416,12 @@ public class TorBoxStreamService
             fileId,
             host,
             attempt);
+        if (target.Kind == TorBoxDeliveryKind.Hls)
+        {
+            _logger.LogInformation(
+                "Jfresolve: TorBox HLS URL from API (verbatim data.hls_url): {Url}",
+                TruncateForLog(target.Url, 240));
+        }
     }
 
     private readonly record struct CreateStreamResult(

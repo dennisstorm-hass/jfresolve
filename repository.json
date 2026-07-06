@@ -9,12 +9,12 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
-        "version": "1.0.0.103",
-        "changelog": "Remove Gelato File trick for TorBox HLS (wrong for m3u8). Stop forcing aac_adtstoasc on MPEG-TS AAC — let Jellyfin use libfdk_aac or plain copy. Enables Safari native HLS direct play.",
-        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.103/jfresolve.zip",
-        "checksum": "7fcd90e652b7deef3d2847e08af08ecd",
+        "version": "1.0.0.104",
+        "changelog": "Stop FFmpeg CDN bypass for TorBox HLS — keep plugin stream.m3u8 so segment URLs get token query params. Log verbatim data.hls_url from API. Fix max_muxing_queue_size placement.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.104/jfresolve.zip",
+        "checksum": "9a54d9db74c6efabdaca774c0bafe6f5",
         "targetAbi": "10.11.0.0",
-        "timestamp": "2026-07-06T11:50:00Z"
+        "timestamp": "2026-07-06T12:00:00Z"
       },
       {
         "version": "1.0.0.93",
