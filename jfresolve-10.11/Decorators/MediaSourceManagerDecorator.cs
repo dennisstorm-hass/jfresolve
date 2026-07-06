@@ -631,7 +631,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 info.Container = "m3u8";
                 info.SupportsDirectStream = true;
                 info.SupportsDirectPlay = true;
-                info.SupportsTranscoding = false;
+                info.SupportsTranscoding = true;
             }
             else
             {
@@ -661,7 +661,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             info.IsRemote = true;
             info.SupportsDirectStream = true;
             info.SupportsDirectPlay = true;
-            info.SupportsTranscoding = false;
+            info.SupportsTranscoding = true;
+            ApplyTorBoxHlsStreamMetadata(info);
             ApplyEstimatedSize(info);
             _log.LogInformation(
                 "Jfresolve: Routing TorBox createstream HLS through plugin proxy for {Context}: {Path}",
@@ -682,6 +683,35 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.IsRemote = true;
         info.Container = delivery.Container;
         ApplyEstimatedSize(info);
+    }
+
+    private static void ApplyTorBoxHlsStreamMetadata(MediaSourceInfo info)
+    {
+        // TorBox createstream HLS is transcoded to H.264/AAC MPEG-TS — not the source HEVC/DV file.
+        var streams = info.MediaStreams?.ToList() ?? new List<MediaStream>();
+        if (!streams.Any())
+        {
+            streams.Add(new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264", IsDefault = true });
+            streams.Add(new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac", IsDefault = true });
+        }
+        else
+        {
+            foreach (var stream in streams)
+            {
+                if (stream.Type == MediaStreamType.Video)
+                {
+                    stream.Codec = "h264";
+                    stream.Profile = "Main";
+                }
+                else if (stream.Type == MediaStreamType.Audio)
+                {
+                    stream.Codec = "aac";
+                    stream.Profile = "LC";
+                }
+            }
+        }
+
+        info.MediaStreams = streams;
     }
 
     private static string ToTorBoxHlsResolvePath(string resolvePath)

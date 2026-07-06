@@ -352,6 +352,18 @@ public class JfresolveApiController : ControllerBase
 
         try
         {
+            // Fast path: use cached TorBox HLS URL for stream.m3u8 (skip addon + createstream round-trip).
+            if (isHlsPath
+                && !string.IsNullOrWhiteSpace(config.TorBoxApiKey)
+                && TorBoxPlaybackCache.TryGetHlsUrl(type, id, season, episode, out var cachedHlsUrl))
+            {
+                _logger.LogInformation(
+                    "Jfresolve: Using cached TorBox HLS URL for {Type}/{Id} stream.m3u8",
+                    type, id);
+                var headOnlyCached = HttpMethods.IsHead(Request.Method);
+                return await ProxyStreamAsync(cachedHlsUrl, type, id, headOnlyCached, userId);
+            }
+
             // Resolve the redirect URL (from cache or by fetching from addon)
             var redirectUrl = await ResolveRedirectUrlAsync(type, id, season, episode, quality, index, config, preferHdrOverDolbyVision, userId, forceHls);
             

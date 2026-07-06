@@ -193,6 +193,12 @@ public sealed class PlaybackStreamResolver
                 request,
                 cancellationToken);
             CacheDeliveryUrl(cacheKey, deliveryUrl, redirectUrl);
+            if (TorBoxStreamService.IsHlsUrl(deliveryUrl))
+            {
+                TorBoxPlaybackCache.SetHlsUrl(
+                    request.Type, request.Id, request.Season, request.Episode, deliveryUrl);
+            }
+
             return deliveryUrl;
         }
         finally

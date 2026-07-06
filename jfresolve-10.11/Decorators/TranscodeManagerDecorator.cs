@@ -54,6 +54,18 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         int? bitRate)
         => _inner.ReportTranscodingProgress(job, state, transcodingPosition, framerate, percentComplete, bytesTranscoded, bitRate);
 
+    private static readonly Regex HevcBsfRegex = new(
+        @"-bsf:v\s+hevc_mp4toannexb\s*",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex Dvh1TagRegex = new(
+        @"-tag:v:0\s+dvh1\s*",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex AudioCopyCodecRegex = new(
+        @"-codec:a:0\s+copy",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
     public async Task<TranscodingJob> StartFfMpeg(
         StreamState state,
         string outputPath,
@@ -72,6 +84,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
             _log.LogInformation(
                 "Jfresolve: Captured FFmpeg seek {Seconds:F3}s before opening resolve URL",
                 seekTicks / 10_000_000.0);
+        }
+
+        var fixedArgs = FixTorBoxHlsFfmpegArgs(commandLineArguments);
+        if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
+        {
+            _log.LogInformation(
+                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS (H.264/AAC, not source HEVC)");
+            commandLineArguments = fixedArgs;
         }
 
         return await _inner.StartFfMpeg(
@@ -116,4 +136,23 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
 
         return false;
     }
+
+    private static string FixTorBoxHlsFfmpegArgs(string args)
+    {
+        if (!IsTorBoxHlsFfmpegInput(args))
+            return args;
+
+        var fixedArgs = HevcBsfRegex.Replace(args, string.Empty);
+        fixedArgs = Dvh1TagRegex.Replace(fixedArgs, string.Empty);
+
+        if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
+            fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");
+
+        return fixedArgs;
+    }
+
+    private static bool IsTorBoxHlsFfmpegInput(string args) =>
+        args.Contains("stream.m3u8", StringComparison.OrdinalIgnoreCase)
+        || (args.Contains("tb-cdn.io", StringComparison.OrdinalIgnoreCase)
+            && args.Contains(".m3u8", StringComparison.OrdinalIgnoreCase));
 }
