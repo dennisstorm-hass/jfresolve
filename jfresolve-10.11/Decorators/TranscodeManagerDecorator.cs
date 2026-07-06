@@ -12,7 +12,7 @@ using Microsoft.Extensions.Logging;
 namespace Jfresolve.Decorators;
 
 /// <summary>
-/// Captures FFmpeg -ss seek offsets and fixes TorBox HLS remux args when Jellyfin still transcodes.
+/// Captures FFmpeg -ss seek offsets and fixes TorBox HLS transcode/remux args when Jellyfin still runs FFmpeg.
 /// </summary>
 public sealed class TranscodeManagerDecorator : ITranscodeManager
 {
@@ -34,6 +34,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
 
     private static readonly Regex AudioCopyCodecRegex = new(
         @"-codec:a:0\s+copy",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex LibFdkAacRegex = new(
+        @"-codec:a:0\s+libfdk_aac(?:\s+-ac\s+\d+)?(?:\s+-ab\s+\d+)?",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+    private static readonly Regex FfmpegInputRegex = new(
+        @"-i\s+""([^""]+)""",
         RegexOptions.Compiled | RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
 
     private readonly ITranscodeManager _inner;
@@ -85,11 +93,11 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
                 seekTicks / 10_000_000.0);
         }
 
-        var fixedArgs = FixTorBoxHlsFfmpegArgs(commandLineArguments);
+        var fixedArgs = FixTorBoxHlsFfmpegArgs(TryReplacePluginHlsInputWithTorBoxCdn(commandLineArguments));
         if (!string.Equals(fixedArgs, commandLineArguments, StringComparison.Ordinal))
         {
             _log.LogInformation(
-                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS (codec + DTS segment fixes)");
+                "Jfresolve: Adjusted FFmpeg args for TorBox createstream HLS");
             commandLineArguments = fixedArgs;
         }
 
@@ -136,6 +144,30 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         return false;
     }
 
+    private string TryReplacePluginHlsInputWithTorBoxCdn(string args)
+    {
+        var match = FfmpegInputRegex.Match(args);
+        if (!match.Success)
+            return args;
+
+        var inputUrl = match.Groups[1].Value;
+        if (!inputUrl.Contains("/Plugins/Jfresolve/resolve/", StringComparison.OrdinalIgnoreCase)
+            || !inputUrl.Contains("stream.m3u8", StringComparison.OrdinalIgnoreCase)
+            || !ResolvePathParser.TryParse(inputUrl, out var parsed))
+        {
+            return args;
+        }
+
+        if (!TorBoxPlaybackCache.TryGetHlsUrl(parsed.Type, parsed.Id, parsed.Season, parsed.Episode, out var hlsUrl))
+            return args;
+
+        _log.LogInformation(
+            "Jfresolve: FFmpeg input → direct TorBox HLS CDN for {Type}/{Id} (bypass plugin stream.m3u8)",
+            parsed.Type,
+            parsed.Id);
+        return args.Replace(inputUrl, hlsUrl, StringComparison.Ordinal);
+    }
+
     private static string FixTorBoxHlsFfmpegArgs(string args)
     {
         if (!IsTorBoxHlsFfmpegInput(args))
@@ -152,6 +184,14 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
                 "-fflags +genpts+igndts+discardcorrupt",
                 StringComparison.Ordinal);
         }
+        else if (fixedArgs.Contains("-fflags +igndts+genpts", StringComparison.Ordinal)
+                 && !fixedArgs.Contains("+discardcorrupt", StringComparison.Ordinal))
+        {
+            fixedArgs = fixedArgs.Replace(
+                "-fflags +igndts+genpts",
+                "-fflags +igndts+genpts+discardcorrupt",
+                StringComparison.Ordinal);
+        }
 
         fixedArgs = fixedArgs.Replace(
             "-avoid_negative_ts disabled",
@@ -160,16 +200,16 @@ public sealed class TranscodeManagerDecorator : ITranscodeManager
         fixedArgs = fixedArgs.Replace("-start_at_zero ", string.Empty, StringComparison.Ordinal);
         fixedArgs = fixedArgs.Replace("-copyts ", string.Empty, StringComparison.Ordinal);
 
-        if (!fixedArgs.Contains("-reset_timestamps", StringComparison.Ordinal))
+        if (LibFdkAacRegex.IsMatch(fixedArgs))
         {
-            fixedArgs = fixedArgs.Replace(
-                "-map_chapters -1 ",
-                "-map_chapters -1 -reset_timestamps 1 ",
-                StringComparison.Ordinal);
+            fixedArgs = LibFdkAacRegex.Replace(
+                fixedArgs,
+                "-bsf:a aac_adtstoasc -codec:a:0 copy");
         }
-
-        if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
+        else if (!fixedArgs.Contains("aac_adtstoasc", StringComparison.OrdinalIgnoreCase))
+        {
             fixedArgs = AudioCopyCodecRegex.Replace(fixedArgs, "-bsf:a aac_adtstoasc -codec:a:0 copy");
+        }
 
         return fixedArgs;
     }
