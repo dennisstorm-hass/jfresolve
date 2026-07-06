@@ -611,6 +611,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             info.Protocol = MediaProtocol.Http;
             info.IsRemote = true;
             ApplyContainerFromUrl(info, info.Path);
+            info.SupportsDirectPlay = true;
+            info.SupportsDirectStream = true;
             ApplyEstimatedSize(info);
             return;
         }
@@ -625,20 +627,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var config = JfresolvePlugin.Instance?.Configuration;
         if (!string.IsNullOrWhiteSpace(config?.TorBoxApiKey))
         {
-            var isHlsResolve = info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase);
-            if (isHlsResolve)
-            {
-                info.Container = "m3u8";
-                info.SupportsDirectStream = true;
-                info.SupportsDirectPlay = true;
-                info.SupportsTranscoding = true;
-            }
-            else
-            {
-                info.Container = null;
-                StripTorBoxStreamPath(info);
-            }
-
+            info.Container = null;
+            StripTorBoxStreamPath(info);
             TryCacheTorBoxRuntime(info);
         }
 
@@ -650,82 +640,23 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
             return;
 
-        var isHls = delivery.Container == "m3u8" || TorBoxStreamService.IsHlsUrl(delivery.Url);
-
-        if (isHls)
-        {
-            var resolvePath = IsResolvePath(info.Path) ? info.Path : item.Path;
-            info.Path = ToTorBoxHlsResolvePath(resolvePath);
-            info.Container = "m3u8";
-            info.Protocol = MediaProtocol.Http;
-            info.IsRemote = true;
-            info.SupportsDirectStream = true;
-            info.SupportsDirectPlay = true;
-            info.SupportsTranscoding = true;
-            ApplyTorBoxHlsStreamMetadata(info);
-            ApplyEstimatedSize(info);
-            _log.LogInformation(
-                "Jfresolve: Routing TorBox createstream HLS through plugin proxy for {Context}: {Path}",
-                item.Name,
-                info.Path);
-            return;
-        }
-
         var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
-        _log.LogInformation(
-            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Context} (host={Host}, container={Container})",
-            item.Name,
-            host,
-            delivery.Container);
+        var deliveryKind = delivery.Container == "m3u8" || TorBoxStreamService.IsHlsUrl(delivery.Url) ? "HLS" : "CDN";
 
         info.Path = delivery.Url;
         info.Protocol = MediaProtocol.Http;
         info.IsRemote = true;
         info.Container = delivery.Container;
+        info.SupportsDirectPlay = true;
+        info.SupportsDirectStream = true;
         ApplyEstimatedSize(info);
-    }
 
-    private static void ApplyTorBoxHlsStreamMetadata(MediaSourceInfo info)
-    {
-        // TorBox createstream HLS is transcoded to H.264/AAC MPEG-TS — not the source HEVC/DV file.
-        var streams = info.MediaStreams?.ToList() ?? new List<MediaStream>();
-        if (!streams.Any())
-        {
-            streams.Add(new MediaStream { Type = MediaStreamType.Video, Index = 0, Codec = "h264", IsDefault = true });
-            streams.Add(new MediaStream { Type = MediaStreamType.Audio, Index = 1, Codec = "aac", IsDefault = true });
-        }
-        else
-        {
-            foreach (var stream in streams)
-            {
-                if (stream.Type == MediaStreamType.Video)
-                {
-                    stream.Codec = "h264";
-                    stream.Profile = "Main";
-                }
-                else if (stream.Type == MediaStreamType.Audio)
-                {
-                    stream.Codec = "aac";
-                    stream.Profile = "LC";
-                }
-            }
-        }
-
-        info.MediaStreams = streams;
-    }
-
-    private static string ToTorBoxHlsResolvePath(string resolvePath)
-    {
-        if (string.IsNullOrWhiteSpace(resolvePath))
-            return resolvePath;
-
-        if (resolvePath.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
-            return resolvePath;
-
-        var queryIndex = resolvePath.IndexOf('?');
-        var pathOnly = queryIndex >= 0 ? resolvePath[..queryIndex] : resolvePath;
-        var query = queryIndex >= 0 ? resolvePath[queryIndex..] : string.Empty;
-        return $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
+        _log.LogInformation(
+            "Jfresolve: Direct-play TorBox {DeliveryKind} for {Context} (host={Host}, container={Container})",
+            deliveryKind,
+            item.Name,
+            host,
+            delivery.Container);
     }
 
     private static bool SourceMatchesPlayingItem(BaseItem item, MediaSourceInfo info)
