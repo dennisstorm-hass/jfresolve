@@ -12,7 +12,7 @@
         "version": "1.0.0.103",
         "changelog": "Remove Gelato File trick for TorBox HLS (wrong for m3u8). Stop forcing aac_adtstoasc on MPEG-TS AAC — let Jellyfin use libfdk_aac or plain copy. Enables Safari native HLS direct play.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.103/jfresolve.zip",
-        "checksum": "327f13b154fa404ebb5f642955efa6bb",
+        "checksum": "7fcd90e652b7deef3d2847e08af08ecd",
         "targetAbi": "10.11.0.0",
         "timestamp": "2026-07-06T11:50:00Z"
       },
