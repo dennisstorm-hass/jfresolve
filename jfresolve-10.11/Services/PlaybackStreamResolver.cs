@@ -100,13 +100,12 @@ public sealed class PlaybackStreamResolver
         var cacheKey = BuildRedirectUrlCacheKey(request);
         var now = DateTime.UtcNow;
 
-        if (!request.ForceHls && !request.PreferHlsForSeek
-            && _deliveryUrlCache.TryGetValue(cacheKey, out var cachedDelivery)
+        if (_deliveryUrlCache.TryGetValue(cacheKey, out var cachedDelivery)
             && cachedDelivery.Expiry > now
-            && TorBoxStreamService.IsTorBoxStreamCdnUrl(cachedDelivery.Url))
+            && TorBoxStreamService.IsTorBoxDeliveryUrl(cachedDelivery.Url))
         {
             _logger.LogDebug(
-                "Jfresolve: Using cached TorBox /dld/ URL for {Type}/{Id}",
+                "Jfresolve: Using cached TorBox delivery URL for {Type}/{Id}",
                 request.Type,
                 request.Id);
             return cachedDelivery.Url;
@@ -180,9 +179,9 @@ public sealed class PlaybackStreamResolver
     {
         var cacheKey = BuildRedirectUrlCacheKey(request);
         var now = DateTime.UtcNow;
-        if (!request.ForceHls && !request.PreferHlsForSeek
-            && _deliveryUrlCache.TryGetValue(cacheKey, out var cached)
-            && cached.Expiry > now)
+        if (_deliveryUrlCache.TryGetValue(cacheKey, out var cached)
+            && cached.Expiry > now
+            && TorBoxStreamService.IsTorBoxDeliveryUrl(cached.Url))
         {
             return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
         }
@@ -194,18 +193,22 @@ public sealed class PlaybackStreamResolver
         if (_deliveryUrlCache.TryGetValue(cacheKey, out cached) && cached.Expiry > now)
             return new DirectPlaybackTarget(cached.Url, cached.Container, cached.Expiry);
 
-        var container = StreamContainerGuesser.FromUrl(url) ?? "mp4";
+        var container = TorBoxStreamService.IsHlsUrl(url)
+            ? "m3u8"
+            : StreamContainerGuesser.FromUrl(url) ?? "mp4";
         return new DirectPlaybackTarget(url, container, now.Add(DeliveryUrlCacheLifetime));
     }
 
     private void CacheDeliveryUrl(string cacheKey, string? deliveryUrl, string? redirectUrl = null)
     {
-        if (string.IsNullOrWhiteSpace(deliveryUrl) || !TorBoxStreamService.IsTorBoxStreamCdnUrl(deliveryUrl))
+        if (string.IsNullOrWhiteSpace(deliveryUrl) || !TorBoxStreamService.IsTorBoxDeliveryUrl(deliveryUrl))
             return;
 
-        var container = StreamContainerGuesser.FromUrl(redirectUrl)
-            ?? StreamContainerGuesser.FromUrl(deliveryUrl)
-            ?? "mp4";
+        var container = TorBoxStreamService.IsHlsUrl(deliveryUrl)
+            ? "m3u8"
+            : StreamContainerGuesser.FromUrl(redirectUrl)
+                ?? StreamContainerGuesser.FromUrl(deliveryUrl)
+                ?? "mp4";
         _deliveryUrlCache[cacheKey] = (deliveryUrl, container, DateTime.UtcNow.Add(DeliveryUrlCacheLifetime));
     }
 

@@ -6,7 +6,7 @@ using Jfresolve.Configuration;
 namespace Jfresolve.Services;
 
 /// <summary>
-/// Resolves and caches TorBox /dld/ delivery targets per Jellyfin item.
+/// Resolves and caches TorBox delivery targets (HLS or /dld/) per Jellyfin item.
 /// </summary>
 public sealed class DirectPlaybackResolver
 {

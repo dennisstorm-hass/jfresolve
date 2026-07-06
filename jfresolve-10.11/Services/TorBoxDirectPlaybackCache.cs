@@ -6,7 +6,7 @@ namespace Jfresolve.Services;
 public readonly record struct DirectPlaybackTarget(string Url, string Container, DateTime Expiry);
 
 /// <summary>
-/// Caches resolved TorBox /dld/ URLs per Jellyfin item for stable playback and probing.
+/// Caches resolved TorBox delivery URLs (HLS or /dld/) per Jellyfin item.
 /// </summary>
 public static class TorBoxDirectPlaybackCache
 {
@@ -27,10 +27,11 @@ public static class TorBoxDirectPlaybackCache
 
     public static void Set(Guid itemId, string url, string? container)
     {
-        if (string.IsNullOrWhiteSpace(url) || !TorBoxStreamService.IsTorBoxStreamCdnUrl(url))
+        if (string.IsNullOrWhiteSpace(url) || !TorBoxStreamService.IsTorBoxDeliveryUrl(url))
             return;
 
         var resolvedContainer = container
+            ?? (TorBoxStreamService.IsHlsUrl(url) ? "m3u8" : null)
             ?? StreamContainerGuesser.FromUrl(url)
             ?? "mp4";
 

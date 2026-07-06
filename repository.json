@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.88",
+        "changelog": "TorBox stream-first: prefer createstream HLS (chunked playback via getstreamdata when needed), fall back to /dld/ only if HLS unavailable. Cache HLS delivery URLs per item.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.88/jfresolve.zip",
+        "checksum": "8bd7904349e7c16c364425790ab27ab8",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T09:45:00Z"
+      },
+      {
         "version": "1.0.0.87",
         "changelog": "Fix TorBox file_id mapping: match Torrentio filename to TorBox short_name (Torrentio index 3 ≠ TorBox file_id 3). Validate /dld/ CDN returns video before use.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.87/jfresolve.zip",

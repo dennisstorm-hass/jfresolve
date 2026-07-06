@@ -635,12 +635,14 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
     private void ApplyDirectDelivery(MediaSourceInfo info, DirectPlaybackTarget delivery, string logContext)
     {
-        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path))
+        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
             return;
 
         var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
+        var deliveryKind = delivery.Container == "m3u8" ? "HLS" : "/dld/";
         _log.LogInformation(
-            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Context} (host={Host}, container={Container})",
+            "Jfresolve: Feeding direct TorBox {DeliveryKind} URL to Jellyfin for {Context} (host={Host}, container={Container})",
+            deliveryKind,
             logContext,
             host,
             delivery.Container);
@@ -816,7 +818,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             {
                 ApplyDirectDelivery(source, cachedDelivery, item.Name);
             }
-            else if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(source.Path)
+            else if (!TorBoxStreamService.IsTorBoxDeliveryUrl(source.Path)
                 && ResolvePathParser.TryParse(item.Path, out _))
             {
                 var delivery = await _directPlaybackResolver.GetOrResolveAsync(
