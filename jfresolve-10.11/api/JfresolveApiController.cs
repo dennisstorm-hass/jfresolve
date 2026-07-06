@@ -307,13 +307,21 @@ public class JfresolveApiController : ControllerBase
         if (!seekHls)
         {
             SeekPositionCache.ClearSeekState();
-            ClearActiveHlsPlayback(type, id);
+            if (!isHlsPath)
+                ClearActiveHlsPlayback(type, id);
         }
 
-        if (isHlsPath && !seekHls)
+        if (isHlsPath && !string.IsNullOrWhiteSpace(config.TorBoxApiKey))
+        {
+            forceHls = true;
+            _logger.LogInformation(
+                "Jfresolve: stream.m3u8 request for {Type}/{Id} — using TorBox createstream HLS",
+                type, id);
+        }
+        else if (isHlsPath && !seekHls)
         {
             _logger.LogInformation(
-                "Jfresolve: stream.m3u8 request without seek for {Type}/{Id} — serving direct MKV",
+                "Jfresolve: stream.m3u8 request without TorBox for {Type}/{Id} — serving direct resolve",
                 type, id);
             forceHls = false;
         }

@@ -142,7 +142,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 foreach (var info in sources)
                 {
                     if (SourceMatchesPlayingItem(item, info))
-                        ApplyDirectDelivery(info, delivery.Value, item.Name);
+                        ApplyDirectDelivery(info, delivery.Value, item);
                 }
                 primarySource = sources.FirstOrDefault(s => SourceMatchesPlayingItem(item, s)) ?? sources.FirstOrDefault();
             }
@@ -178,7 +178,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                 foreach (var info in sources)
                 {
                     if (SourceMatchesPlayingItem(item, info))
-                        ApplyDirectDelivery(info, delivery.Value, item.Name);
+                        ApplyDirectDelivery(info, delivery.Value, item);
                 }
             }
 
@@ -296,7 +296,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             // Apply trick to ensure proper protocol and remote settings
             ApplyTrick(qualitySource);
             if (qualityDelivery != null && SourceMatchesPlayingItem(item, qualitySource))
-                ApplyDirectDelivery(qualitySource, qualityDelivery.Value, virtualItem.Name);
+                ApplyDirectDelivery(qualitySource, qualityDelivery.Value, virtualItem);
 
             sources.Add(qualitySource);
         }
@@ -625,25 +625,55 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         var config = JfresolvePlugin.Instance?.Configuration;
         if (!string.IsNullOrWhiteSpace(config?.TorBoxApiKey))
         {
-            info.Container = null;
-            StripTorBoxStreamPath(info);
+            var isHlsResolve = info.Path.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase);
+            if (isHlsResolve)
+            {
+                info.Container = "m3u8";
+                info.SupportsDirectStream = true;
+                info.SupportsDirectPlay = true;
+                info.SupportsTranscoding = false;
+            }
+            else
+            {
+                info.Container = null;
+                StripTorBoxStreamPath(info);
+            }
+
             TryCacheTorBoxRuntime(info);
         }
 
         ApplyEstimatedSize(info);
     }
 
-    private void ApplyDirectDelivery(MediaSourceInfo info, DirectPlaybackTarget delivery, string logContext)
+    private void ApplyDirectDelivery(MediaSourceInfo info, DirectPlaybackTarget delivery, BaseItem item)
     {
         if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
             return;
 
+        var isHls = delivery.Container == "m3u8" || TorBoxStreamService.IsHlsUrl(delivery.Url);
+
+        if (isHls)
+        {
+            var resolvePath = IsResolvePath(info.Path) ? info.Path : item.Path;
+            info.Path = ToTorBoxHlsResolvePath(resolvePath);
+            info.Container = "m3u8";
+            info.Protocol = MediaProtocol.Http;
+            info.IsRemote = true;
+            info.SupportsDirectStream = true;
+            info.SupportsDirectPlay = true;
+            info.SupportsTranscoding = false;
+            ApplyEstimatedSize(info);
+            _log.LogInformation(
+                "Jfresolve: Routing TorBox HLS through plugin proxy for {Context}: {Path}",
+                item.Name,
+                info.Path);
+            return;
+        }
+
         var host = Uri.TryCreate(delivery.Url, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
-        var deliveryKind = delivery.Container == "m3u8" ? "HLS" : "/dld/";
         _log.LogInformation(
-            "Jfresolve: Feeding direct TorBox {DeliveryKind} URL to Jellyfin for {Context} (host={Host}, container={Container})",
-            deliveryKind,
-            logContext,
+            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Context} (host={Host}, container={Container})",
+            item.Name,
             host,
             delivery.Container);
 
@@ -652,6 +682,20 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         info.IsRemote = true;
         info.Container = delivery.Container;
         ApplyEstimatedSize(info);
+    }
+
+    private static string ToTorBoxHlsResolvePath(string resolvePath)
+    {
+        if (string.IsNullOrWhiteSpace(resolvePath))
+            return resolvePath;
+
+        if (resolvePath.Contains("/stream.m3u8", StringComparison.OrdinalIgnoreCase))
+            return resolvePath;
+
+        var queryIndex = resolvePath.IndexOf('?');
+        var pathOnly = queryIndex >= 0 ? resolvePath[..queryIndex] : resolvePath;
+        var query = queryIndex >= 0 ? resolvePath[queryIndex..] : string.Empty;
+        return $"{pathOnly.TrimEnd('/')}/stream.m3u8{query}";
     }
 
     private static bool SourceMatchesPlayingItem(BaseItem item, MediaSourceInfo info)
@@ -687,6 +731,9 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         {
             return;
         }
+
+        if (string.Equals(info.Container, "m3u8", StringComparison.OrdinalIgnoreCase))
+            return;
 
         info.Path = info.Path.Replace("/stream.m3u8", "", StringComparison.OrdinalIgnoreCase);
     }
@@ -816,7 +863,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             ApplyTrick(source);
             if (TorBoxDirectPlaybackCache.TryGet(item.Id, out var cachedDelivery))
             {
-                ApplyDirectDelivery(source, cachedDelivery, item.Name);
+                ApplyDirectDelivery(source, cachedDelivery, item);
             }
             else if (!TorBoxStreamService.IsTorBoxDeliveryUrl(source.Path)
                 && ResolvePathParser.TryParse(item.Path, out _))
@@ -827,7 +874,7 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
                     null,
                     cancellationToken).ConfigureAwait(false);
                 if (delivery != null)
-                    ApplyDirectDelivery(source, delivery.Value, item.Name);
+                    ApplyDirectDelivery(source, delivery.Value, item);
             }
 
             if (IsResolvePath(source.Path))

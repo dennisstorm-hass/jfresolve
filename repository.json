@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.89",
+        "changelog": "Fix TorBox HLS playback: route createstream m3u8 through plugin resolve proxy instead of feeding direct tb-cdn.io URL to Jellyfin (avoids HLS→HLS FFmpeg remux failures on DV HEVC). Preserve stream.m3u8 path through probe.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.89/jfresolve.zip",
+        "checksum": "66287b20a9e8eec5652ea79b18e41704",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T10:00:00Z"
+      },
+      {
         "version": "1.0.0.88",
         "changelog": "TorBox stream-first: prefer createstream HLS (chunked playback via getstreamdata when needed), fall back to /dld/ only if HLS unavailable. Cache HLS delivery URLs per item.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.88/jfresolve.zip",
