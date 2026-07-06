@@ -45,6 +45,8 @@ public sealed class PlaybackStreamResolver
     private readonly ConcurrentDictionary<string, FailoverState> _failoverCache = new();
     private readonly ConcurrentDictionary<string, (string Json, DateTime Expiry)> _streamMetadataCache = new();
     private readonly ConcurrentDictionary<string, (string RedirectUrl, DateTime Expiry)> _redirectUrlCache = new();
+    private readonly ConcurrentDictionary<string, (string Url, DateTime Expiry)> _deliveryUrlCache = new();
+    private static readonly TimeSpan DeliveryUrlCacheLifetime = TimeSpan.FromMinutes(45);
     private DateTime _lastStreamCacheCleanup = DateTime.UtcNow;
     private DateTime _lastRedirectUrlCacheCleanup = DateTime.UtcNow;
 
@@ -87,17 +89,32 @@ public sealed class PlaybackStreamResolver
         }
 
         _logger.LogInformation(
-            "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode})",
+            "Jfresolve: Resolving stream for {Type}/{Id} (Season: {Season}, Episode: {Episode}, Quality: {Quality}, Index: {Index})",
             request.Type,
             request.Id,
             request.Season ?? "N/A",
-            request.Episode ?? "N/A");
+            request.Episode ?? "N/A",
+            request.Quality ?? "default",
+            request.Index?.ToString() ?? "0");
 
-        var redirectCacheKey = BuildRedirectUrlCacheKey(request);
+        var cacheKey = BuildRedirectUrlCacheKey(request);
         var now = DateTime.UtcNow;
+
+        if (!request.ForceHls && !request.PreferHlsForSeek
+            && _deliveryUrlCache.TryGetValue(cacheKey, out var cachedDelivery)
+            && cachedDelivery.Expiry > now
+            && TorBoxStreamService.IsTorBoxStreamCdnUrl(cachedDelivery.Url))
+        {
+            _logger.LogDebug(
+                "Jfresolve: Using cached TorBox /dld/ URL for {Type}/{Id}",
+                request.Type,
+                request.Id);
+            return cachedDelivery.Url;
+        }
+
         CleanupRedirectUrlCacheIfNeeded();
 
-        if (_redirectUrlCache.TryGetValue(redirectCacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
+        if (_redirectUrlCache.TryGetValue(cacheKey, out var cachedRedirect) && cachedRedirect.Expiry > now)
         {
             _logger.LogDebug(
                 "Jfresolve: Using cached addon redirect URL for {Type}/{Id}",
@@ -138,21 +155,31 @@ public sealed class PlaybackStreamResolver
             {
                 var expiry = now.Add(Constants.RedirectUrlCacheExpiry);
                 _redirectUrlCache.AddOrUpdate(
-                    redirectCacheKey,
+                    cacheKey,
                     (redirectUrl, expiry),
                     (_, _) => (redirectUrl, expiry));
             }
 
-            return await NormalizeTorBoxUrlAsync(
+            var deliveryUrl = await NormalizeTorBoxUrlAsync(
                 redirectUrl,
                 config.TorBoxApiKey,
                 request,
                 cancellationToken);
+            CacheDeliveryUrl(cacheKey, deliveryUrl);
+            return deliveryUrl;
         }
         finally
         {
             streamsDoc?.Dispose();
         }
+    }
+
+    private void CacheDeliveryUrl(string cacheKey, string? deliveryUrl)
+    {
+        if (string.IsNullOrWhiteSpace(deliveryUrl) || !TorBoxStreamService.IsTorBoxStreamCdnUrl(deliveryUrl))
+            return;
+
+        _deliveryUrlCache[cacheKey] = (deliveryUrl, DateTime.UtcNow.Add(DeliveryUrlCacheLifetime));
     }
 
     public async Task<string?> NormalizeTorBoxUrlAsync(

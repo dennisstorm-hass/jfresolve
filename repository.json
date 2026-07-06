@@ -9,6 +9,14 @@
     "imageUrl": "https://raw.githubusercontent.com/dennisstorm-hass/jfresolve/main/jfresolve.png",
     "versions": [
       {
+        "version": "1.0.0.84",
+        "changelog": "Fix direct TorBox URL flipping: apply /dld/ only to the played item (not all quality variants); skip re-resolution when already on tb-cdn.io; cache /dld/ URLs for 45 minutes.",
+        "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.84/jfresolve.zip",
+        "checksum": "a7794f72efe3166e08cfc45962e7db3e",
+        "targetAbi": "10.11.0.0",
+        "timestamp": "2026-07-06T08:55:00Z"
+      },
+      {
         "version": "1.0.0.83",
         "changelog": "Feed TorBox /dld/ CDN URLs directly to Jellyfin MediaSource.Path at playback start — FFmpeg opens tb-cdn.io directly (no byte proxy). Resolve endpoint kept as fallback.",
         "sourceUrl": "https://github.com/dennisstorm-hass/jfresolve/releases/download/10.11.1.0.0.83/jfresolve.zip",

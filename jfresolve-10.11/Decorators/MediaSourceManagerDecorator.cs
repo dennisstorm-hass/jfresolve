@@ -96,7 +96,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         foreach (var info in sources)
         {
             ApplyTrick(info);
-            await ApplyDirectTorBoxUrlAsync(info, user, cancellationToken).ConfigureAwait(false);
+            if (SourceMatchesPlayingItem(item, info))
+                await ApplyDirectTorBoxUrlAsync(info, item, user, cancellationToken).ConfigureAwait(false);
         }
 
         var primarySource = sources.FirstOrDefault();
@@ -110,7 +111,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             foreach (var info in sources)
             {
                 ApplyTrick(info);
-                await ApplyDirectTorBoxUrlAsync(info, user, cancellationToken).ConfigureAwait(false);
+                if (SourceMatchesPlayingItem(item, info))
+                    await ApplyDirectTorBoxUrlAsync(info, item, user, cancellationToken).ConfigureAwait(false);
             }
             
             // CRITICAL: Ensure MediaStreams on MediaSourceInfo are populated from database
@@ -257,7 +259,8 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
             // Apply trick to ensure proper protocol and remote settings
             ApplyTrick(qualitySource);
-            await ApplyDirectTorBoxUrlAsync(qualitySource, user, cancellationToken).ConfigureAwait(false);
+            if (SourceMatchesPlayingItem(item, qualitySource))
+                await ApplyDirectTorBoxUrlAsync(qualitySource, virtualItem, user, cancellationToken).ConfigureAwait(false);
 
             sources.Add(qualitySource);
         }
@@ -576,13 +579,20 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         ApplyEstimatedSize(info);
     }
 
-    private async Task ApplyDirectTorBoxUrlAsync(MediaSourceInfo info, User user, CancellationToken cancellationToken)
+    private async Task ApplyDirectTorBoxUrlAsync(
+        MediaSourceInfo info,
+        BaseItem item,
+        User user,
+        CancellationToken cancellationToken)
     {
         var config = JfresolvePlugin.Instance?.Configuration;
         if (config == null || string.IsNullOrWhiteSpace(config.TorBoxApiKey))
             return;
 
-        if (!ResolvePathParser.TryParse(info.Path, out var parsed))
+        if (TorBoxStreamService.IsTorBoxStreamCdnUrl(info.Path) || TorBoxStreamService.IsHlsUrl(info.Path))
+            return;
+
+        if (!ResolvePathParser.TryParse(item.Path, out var parsed))
             return;
 
         var preferHdr = config.PreferHdrOverDolbyVision;
@@ -609,10 +619,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
         if (string.IsNullOrWhiteSpace(directUrl))
             return;
 
-        if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(directUrl) && !TorBoxStreamService.IsHlsUrl(directUrl))
+        if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(directUrl))
         {
             _log.LogDebug(
-                "Jfresolve: Resolved URL is not direct TorBox delivery for {Type}/{Id}, keeping resolve path",
+                "Jfresolve: Resolved URL is not TorBox /dld/ for {Type}/{Id}, keeping resolve path",
                 parsed.Type,
                 parsed.Id);
             return;
@@ -620,17 +630,24 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
 
         var host = Uri.TryCreate(directUrl, UriKind.Absolute, out var uri) ? uri.Host : "unknown";
         _log.LogInformation(
-            "Jfresolve: Feeding direct TorBox URL to Jellyfin for {Type}/{Id} (host={Host})",
+            "Jfresolve: Feeding direct TorBox /dld/ URL to Jellyfin for {Type}/{Id} (host={Host}, quality={Quality})",
             parsed.Type,
             parsed.Id,
-            host);
+            host,
+            parsed.Quality ?? "default");
 
         info.Path = directUrl;
         info.Protocol = MediaProtocol.Http;
         info.IsRemote = true;
         ApplyContainerFromUrl(info, directUrl);
-        if (TorBoxStreamService.IsHlsUrl(directUrl))
-            info.Container = "m3u8";
+    }
+
+    private static bool SourceMatchesPlayingItem(BaseItem item, MediaSourceInfo info)
+    {
+        if (item == null || info == null || string.IsNullOrEmpty(info.Id))
+            return false;
+
+        return Guid.TryParse(info.Id, out var sourceId) && sourceId == item.Id;
     }
 
     private static bool IsResolvePath(string? path) =>
@@ -798,11 +815,10 @@ public class MediaSourceManagerDecorator : IMediaSourceManager
             }
             
             ApplyTrick(source);
-            var resolutionPath = IsResolvePath(source.Path) ? source.Path : item.Path;
-            if (ResolvePathParser.TryParse(resolutionPath, out _))
+            if (!TorBoxStreamService.IsTorBoxStreamCdnUrl(source.Path)
+                && ResolvePathParser.TryParse(item.Path, out _))
             {
-                source.Path = resolutionPath;
-                await ApplyDirectTorBoxUrlAsync(source, null, cancellationToken).ConfigureAwait(false);
+                await ApplyDirectTorBoxUrlAsync(source, item, null, cancellationToken).ConfigureAwait(false);
             }
 
             if (IsResolvePath(source.Path))
